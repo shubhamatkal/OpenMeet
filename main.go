@@ -89,23 +89,39 @@ func handleWS(w http.ResponseWriter, r *http.Request) {
 
 	// --- Cleanup on disconnect ---
 	mu.Lock()
-	hostLeft := peerIndex == 0 // peer 0 is always the host
 
-	// Remove this peer from the slice
-	meet.peers = append(meet.peers[:peerIndex], meet.peers[peerIndex+1:]...)
-
-	// If the host left and a guest is still connected, tell the guest the meet is over.
-	// After the slice removal, the former guest is now at index 0.
-	if hostLeft && len(meet.peers) > 0 {
-		meet.peers[0].WriteMessage(websocket.TextMessage, []byte(`{"type":"meet-ended"}`))
-		log.Printf("Host left meet %s — notified guest", meetID)
+	// peerIndex captured at join time tells us the role (host vs guest),
+	// but the slice may have shrunk since then if the other peer already left.
+	// Search for this conn's current position rather than using the stale index.
+	currentIdx := -1
+	for i, p := range meet.peers {
+		if p == conn {
+			currentIdx = i
+			break
+		}
 	}
 
-	// If meet is empty, remove it from the map entirely
-	if len(meet.peers) == 0 {
-		delete(meets, meetID)
-		log.Printf("Meet %s closed", meetID)
+	if currentIdx != -1 {
+		meet.peers = append(meet.peers[:currentIdx], meet.peers[currentIdx+1:]...)
+
+		hostLeft := peerIndex == 0 // role is determined by original join order
+
+		if hostLeft && len(meet.peers) > 0 {
+			meet.peers[0].WriteMessage(websocket.TextMessage, []byte(`{"type":"meet-ended"}`))
+			log.Printf("Host left meet %s — notified guest", meetID)
+		}
+
+		if !hostLeft && len(meet.peers) > 0 {
+			meet.peers[0].WriteMessage(websocket.TextMessage, []byte(`{"type":"peer-left"}`))
+			log.Printf("Guest left meet %s — notified host", meetID)
+		}
+
+		if len(meet.peers) == 0 {
+			delete(meets, meetID)
+			log.Printf("Meet %s closed", meetID)
+		}
 	}
+
 	mu.Unlock()
 }
 

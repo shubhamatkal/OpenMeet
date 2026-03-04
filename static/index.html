@@ -1,5 +1,5 @@
 <!DOCTYPE html>
-<html class="light" lang="en">
+<html lang="en">
 <head>
   <meta charset="utf-8"/>
   <meta content="width=device-width, initial-scale=1.0" name="viewport"/>
@@ -49,10 +49,14 @@
       </div>
       <h2 class="text-xl font-bold tracking-tight">OpenMeet</h2>
     </a>
-    <div class="hidden sm:flex items-center gap-2 text-slate-600 dark:text-slate-400">
+    <div class="hidden sm:flex items-center gap-3 text-slate-600 dark:text-slate-400">
       <span class="text-sm font-medium" id="clock"></span>
       <span class="text-sm">|</span>
       <span class="text-sm font-medium" id="date"></span>
+      <button id="darkModeBtn" title="Toggle dark mode"
+        class="text-slate-400 hover:text-black dark:hover:text-white transition-colors">
+        <span class="material-symbols-outlined" style="font-size:20px">dark_mode</span>
+      </button>
     </div>
   </header>
 
@@ -137,81 +141,130 @@
   </main>
 
   <!-- ═══════════════════════════════════════════════════════
-       SCREEN 4 — Meeting  (full-screen dark video room)
+       SCREEN 4 — Meeting  (full-screen, Google Meet style)
        ═══════════════════════════════════════════════════════ -->
-  <div id="screen-meeting" class="hidden fixed inset-0 z-50 bg-slate-950 flex flex-col font-display">
+  <div id="screen-meeting" class="hidden fixed inset-0 z-50 flex flex-col font-display" style="background:#1a2b3c">
 
-    <!-- Top bar: logo + meetID + copy -->
-    <div class="flex items-center justify-between px-4 py-3 bg-slate-900">
-      <a href="/" class="flex items-center gap-2 text-white">
-        <span class="material-symbols-outlined text-xl">videocam</span>
-        <span class="font-bold text-sm">OpenMeet</span>
-      </a>
-      <!-- meetID shown here so host can share it -->
-      <div class="flex items-center gap-2 bg-slate-800 rounded-lg px-3 py-1.5">
-        <span class="text-slate-300 text-sm font-mono tracking-wider" id="meetIDBar"></span>
-        <button id="copyMeetIDBtn" title="Copy meeting link" class="text-slate-400 hover:text-white transition-colors">
-          <span class="material-symbols-outlined text-[16px]">content_copy</span>
-        </button>
+    <!-- ── Full-screen video layer ── -->
+    <div class="flex-1 relative overflow-hidden">
+
+      <!-- Remote: fills entire area when peer is connected -->
+      <div id="remoteContainer" class="hidden absolute inset-0">
+        <div id="remoteAvatar" class="hidden absolute inset-0 flex items-center justify-center" style="background:#1a2b3c">
+          <div class="w-28 h-28 rounded-full bg-blue-600 flex items-center justify-center shadow-2xl">
+            <span class="material-symbols-outlined text-white" style="font-size:56px">person</span>
+          </div>
+        </div>
+        <video id="remoteVideo" class="absolute inset-0 w-full h-full object-cover" autoplay playsinline></video>
+        <!-- Mic badge (bottom-left) -->
+        <div id="remoteMicIndicator"
+          class="absolute bottom-4 left-4 flex items-center gap-1.5 px-2.5 py-1.5 bg-black/50 rounded-lg transition-colors">
+          <span class="material-symbols-outlined text-white" style="font-size:16px">mic</span>
+          <span class="text-white text-xs font-medium">Guest</span>
+        </div>
       </div>
-      <!-- Empty div keeps meetID centered -->
-      <div class="w-[100px]"></div>
-    </div>
 
-    <!-- Video area -->
-    <div class="flex-1 relative flex items-center justify-center p-4 overflow-hidden">
+      <!-- Local: full-screen when alone → small PiP when peer connects -->
+      <div id="localContainer" class="absolute inset-0">
+        <div id="localAvatar" class="hidden absolute inset-0 flex items-center justify-center" style="background:#1a2b3c">
+          <div id="localAvatarCircle" class="w-28 h-28 rounded-full bg-blue-600 flex items-center justify-center shadow-2xl">
+            <span id="localAvatarIcon" class="material-symbols-outlined text-white" style="font-size:56px">person</span>
+          </div>
+        </div>
+        <video id="localVideo" class="absolute inset-0 w-full h-full object-cover" autoplay muted playsinline></video>
+        <!-- Mic + name badge — only visible in PiP mode -->
+        <div id="localMicIndicator"
+          class="hidden absolute bottom-1.5 left-1.5 flex items-center gap-1 px-1.5 py-1 bg-black/60 rounded-md transition-colors">
+          <span class="material-symbols-outlined text-white" style="font-size:11px">mic</span>
+          <span class="text-white font-medium" style="font-size:10px">You</span>
+        </div>
+      </div>
 
-      <!-- Remote video: main / large view (fills the area) -->
-      <video id="remoteVideo"
-        class="w-full max-w-4xl rounded-2xl bg-slate-800 aspect-video object-cover"
-        autoplay playsinline>
-      </video>
+      <!-- Invite card — Google Meet style, bottom-left, dismissible -->
+      <div id="inviteCard"
+        class="absolute bottom-4 left-4 w-72 bg-white dark:bg-slate-800 rounded-2xl shadow-2xl p-5 z-20">
+        <div class="flex items-center justify-between mb-3">
+          <h3 class="font-semibold text-slate-900 dark:text-white text-sm">Your meeting's ready</h3>
+          <button id="inviteCardClose"
+            class="text-slate-400 hover:text-slate-600 dark:hover:text-slate-200 transition-colors -mr-1">
+            <span class="material-symbols-outlined" style="font-size:20px">close</span>
+          </button>
+        </div>
+        <p class="text-slate-500 dark:text-slate-400 text-xs mb-3 leading-relaxed">
+          Share this link with people you want in the meeting
+        </p>
+        <div class="flex items-center gap-2 border border-slate-200 dark:border-slate-600 rounded-xl px-3 py-2 bg-slate-50 dark:bg-slate-700/50">
+          <span id="meetCodeDisplay" class="text-slate-700 dark:text-slate-200 text-xs font-mono flex-1 truncate"></span>
+          <button id="shareLinkBtn" title="Copy meeting link"
+            class="text-slate-400 hover:text-slate-800 dark:hover:text-white transition-colors flex-shrink-0">
+            <span class="material-symbols-outlined" style="font-size:18px">content_copy</span>
+          </button>
+        </div>
+        <div class="flex items-start gap-2 mt-3">
+          <span class="material-symbols-outlined text-blue-500 flex-shrink-0 mt-px" style="font-size:14px">shield</span>
+          <p class="text-slate-400 dark:text-slate-500 text-xs leading-relaxed">
+            People who use this link must get your permission before they can join.
+          </p>
+        </div>
+      </div>
 
-      <!-- Status overlay: shown on top of remote video when no peer is connected yet -->
-      <p id="meetingStatus"
-        class="absolute inset-0 flex items-center justify-center text-slate-400 text-sm pointer-events-none">
-      </p>
-
-      <!-- Local video: picture-in-picture in bottom-right corner -->
-      <video id="localVideo"
-        class="absolute bottom-4 right-4 w-44 rounded-xl bg-slate-800 aspect-video object-cover shadow-2xl border border-slate-700"
-        autoplay muted playsinline>
-      </video>
-
-      <!-- Knock notification — floats at top, shown to HOST when guest knocks -->
+      <!-- Knock notification — floats at top-center, host only -->
       <div id="knockNotification"
-        class="hidden absolute top-4 left-1/2 -translate-x-1/2 bg-slate-800 border border-slate-700 rounded-2xl px-5 py-4 flex items-center gap-4 shadow-2xl">
-        <div class="w-10 h-10 rounded-full bg-slate-700 flex items-center justify-center flex-shrink-0">
-          <span class="material-symbols-outlined text-white text-xl">person</span>
+        class="hidden absolute top-4 left-1/2 -translate-x-1/2 bg-white dark:bg-slate-800 border border-slate-100 dark:border-slate-700 rounded-2xl px-5 py-4 flex items-center gap-4 shadow-2xl z-20">
+        <div class="w-10 h-10 rounded-full bg-blue-100 dark:bg-slate-700 flex items-center justify-center flex-shrink-0">
+          <span class="material-symbols-outlined text-blue-600 dark:text-white text-xl">person</span>
         </div>
         <div class="text-left">
-          <p class="text-white font-semibold text-sm">Someone wants to join</p>
-          <p class="text-slate-400 text-xs">Let them in?</p>
+          <p class="text-slate-900 dark:text-white font-semibold text-sm">Someone wants to join</p>
+          <p class="text-slate-500 dark:text-slate-400 text-xs">Let them in?</p>
         </div>
         <div class="flex gap-2 ml-2">
-          <button id="denyBtn"  class="bg-red-600   hover:bg-red-700   text-white rounded-xl px-3 py-1.5 text-sm font-semibold transition-colors">Deny</button>
+          <button id="denyBtn"  class="bg-red-600 hover:bg-red-700   text-white rounded-xl px-3 py-1.5 text-sm font-semibold transition-colors">Deny</button>
           <button id="admitBtn" class="bg-green-600 hover:bg-green-700 text-white rounded-xl px-3 py-1.5 text-sm font-semibold transition-colors">Admit</button>
         </div>
       </div>
 
     </div>
 
-    <!-- Bottom controls: mic | leave | camera -->
-    <div class="flex items-center justify-center gap-4 py-5 bg-slate-900">
-      <button id="micBtn" title="Toggle microphone"
-        class="w-12 h-12 rounded-full bg-slate-700 hover:bg-slate-600 flex items-center justify-center text-white transition-colors">
-        <span class="material-symbols-outlined">mic</span>
-      </button>
-      <button id="leaveBtn" title="Leave meeting"
-        class="h-12 px-8 rounded-full bg-red-600 hover:bg-red-700 flex items-center justify-center text-white transition-colors">
-        <span class="material-symbols-outlined">call_end</span>
-      </button>
-      <button id="cameraBtn" title="Toggle camera"
-        class="w-12 h-12 rounded-full bg-slate-700 hover:bg-slate-600 flex items-center justify-center text-white transition-colors">
-        <span class="material-symbols-outlined">videocam</span>
-      </button>
-    </div>
+    <!-- ── Bottom bar: time + meetID | controls | participant count ── -->
+    <div class="relative z-10 flex items-center px-5 py-3" style="background:#1a2b3c">
 
+      <!-- Left: clock + meetID -->
+      <div class="flex items-center gap-2 w-52">
+        <span id="meetingClock" class="text-slate-300 text-sm font-medium tabular-nums"></span>
+        <span class="text-slate-600 text-xs">·</span>
+        <span id="meetIDBar" class="text-slate-400 font-mono text-xs tracking-wide truncate max-w-[120px]"></span>
+      </div>
+
+      <!-- Center: mic | camera | leave -->
+      <div class="flex-1 flex items-center justify-center gap-3">
+        <button id="micBtn" title="Toggle microphone"
+          class="w-12 h-12 rounded-full bg-slate-700 hover:bg-slate-600 flex items-center justify-center text-white transition-colors">
+          <span class="material-symbols-outlined">mic</span>
+        </button>
+        <button id="cameraBtn" title="Toggle camera"
+          class="w-12 h-12 rounded-full bg-slate-700 hover:bg-slate-600 flex items-center justify-center text-white transition-colors">
+          <span class="material-symbols-outlined">videocam</span>
+        </button>
+        <button id="leaveBtn" title="Leave meeting"
+          class="h-12 px-6 rounded-full bg-red-600 hover:bg-red-700 flex items-center justify-center text-white transition-colors">
+          <span class="material-symbols-outlined">call_end</span>
+        </button>
+      </div>
+
+      <!-- Right: participant count + copy link -->
+      <div class="flex items-center gap-2 w-52 justify-end">
+        <div class="flex items-center gap-1.5 text-slate-400 text-sm">
+          <span class="material-symbols-outlined" style="font-size:18px">group</span>
+          <span id="participantCount">1</span>
+        </div>
+        <button id="copyMeetIDBtn" title="Copy meeting link"
+          class="w-10 h-10 rounded-full bg-slate-700 hover:bg-slate-600 flex items-center justify-center text-slate-300 hover:text-white transition-colors">
+          <span class="material-symbols-outlined" style="font-size:18px">content_copy</span>
+        </button>
+      </div>
+
+    </div>
   </div>
 
   <!-- ═══════════════════════════════════════════════════════
@@ -226,6 +279,7 @@
         <h2 class="text-2xl font-bold">Entry denied</h2>
         <p class="text-slate-500 dark:text-slate-400 text-sm">The host didn't let you into this meeting.</p>
       </div>
+      <p id="deniedCountdown" class="text-slate-500 dark:text-slate-500 text-xs"></p>
       <a href="/" class="bg-black hover:bg-black/90 text-white dark:bg-white dark:hover:bg-white/90 dark:text-black rounded-xl py-3 px-8 font-semibold transition-all">
         Return to home
       </a>
@@ -244,6 +298,7 @@
         <h2 class="text-2xl font-bold">Meeting is full</h2>
         <p class="text-slate-500 dark:text-slate-400 text-sm">This meeting already has 2 participants. Try again when someone leaves.</p>
       </div>
+      <p id="fullCountdown" class="text-slate-500 dark:text-slate-500 text-xs"></p>
       <a href="/" class="bg-black hover:bg-black/90 text-white dark:bg-white dark:hover:bg-white/90 dark:text-black rounded-xl py-3 px-8 font-semibold transition-all">
         Return to home
       </a>
@@ -262,6 +317,7 @@
         <h2 class="text-2xl font-bold">Meeting ended</h2>
         <p class="text-slate-500 dark:text-slate-400 text-sm">The host has ended this meeting.</p>
       </div>
+      <p id="endedCountdown" class="text-slate-500 dark:text-slate-500 text-xs"></p>
       <a href="/" class="bg-black hover:bg-black/90 text-white dark:bg-white dark:hover:bg-white/90 dark:text-black rounded-xl py-3 px-8 font-semibold transition-all">
         Return to home
       </a>

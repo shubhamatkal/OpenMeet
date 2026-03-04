@@ -262,9 +262,9 @@ require github.com/gorilla/websocket
 
 ```bash
 # Clone and set up
-git clone https://github.com/YOURUSERNAME/videochat
+git clone https://github.com/shubhamatkal/OpenMeet
 cd videochat
-go mod init github.com/YOURUSERNAME/videochat
+go mod init github.com/shubhamatkal/OpenMeet
 go get github.com/gorilla/websocket
 
 # Run

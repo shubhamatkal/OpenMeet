@@ -13,4 +13,4 @@ go run main.go
 
 1. Both browsers connect to the Go server via WebSocket
 2. Go server relays signaling messages (offer / answer / ICE candidates) between them
-3. Once browsers find each other, video streams directly — Go server is no longer involved
+3. Once browsers find each other, video streams directly — Go server is no longer involved.
