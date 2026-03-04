@@ -1,0 +1,144 @@
+<!DOCTYPE html>
+<html class="light" lang="en">
+<head>
+  <meta charset="utf-8"/>
+  <meta content="width=device-width, initial-scale=1.0" name="viewport"/>
+  <title>OpenMeet</title>
+  <script src="https://cdn.tailwindcss.com?plugins=forms,container-queries"></script>
+  <link href="https://fonts.googleapis.com" rel="preconnect"/>
+  <link crossorigin="" href="https://fonts.gstatic.com" rel="preconnect"/>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet"/>
+  <link href="https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined:wght,FILL@100..700,0..1&display=swap" rel="stylesheet"/>
+  <script id="tailwind-config">
+    tailwind.config = {
+      darkMode: "class",
+      theme: {
+        extend: {
+          colors: {
+            "background-light": "#f6f7f8",
+            "background-dark": "#101922",
+          },
+          fontFamily: {
+            "display": ["Inter", "sans-serif"]
+          },
+          borderRadius: { "DEFAULT": "0.25rem", "lg": "0.5rem", "xl": "0.75rem", "full": "9999px" },
+        },
+      },
+    }
+  </script>
+  <style>
+    .material-symbols-outlined {
+      font-variation-settings: 'FILL' 0, 'wght' 400, 'GRAD' 0, 'opsz' 24;
+    }
+  </style>
+</head>
+<body class="font-display bg-background-light dark:bg-background-dark text-slate-900 dark:text-slate-100 min-h-screen flex flex-col relative overflow-hidden selection:bg-black/20 selection:text-black dark:selection:bg-white/20 dark:selection:text-white">
+
+  <!-- Background gradients -->
+  <div class="absolute inset-0 bg-[radial-gradient(circle_at_top_right,rgba(0,0,0,0.05),transparent_40%)] dark:bg-[radial-gradient(circle_at_top_right,rgba(255,255,255,0.05),transparent_40%)] pointer-events-none"></div>
+  <div class="absolute inset-0 bg-[radial-gradient(circle_at_bottom_left,rgba(0,0,0,0.03),transparent_40%)] dark:bg-[radial-gradient(circle_at_bottom_left,rgba(255,255,255,0.03),transparent_40%)] pointer-events-none"></div>
+
+  <!-- Header -->
+  <header class="flex items-center justify-between px-6 py-4 relative z-10 w-full max-w-7xl mx-auto">
+    <div class="flex items-center gap-2 text-slate-900 dark:text-white">
+      <div class="flex items-center justify-center w-10 h-10 rounded-xl bg-black/10 text-black dark:bg-white/10 dark:text-white">
+        <span class="material-symbols-outlined text-2xl">videocam</span>
+      </div>
+      <h2 class="text-xl font-bold tracking-tight">OpenMeet</h2>
+    </div>
+    <div class="flex items-center gap-6">
+      <div class="hidden sm:flex items-center gap-2 text-slate-600 dark:text-slate-400">
+        <span class="text-sm font-medium" id="clock"></span>
+        <span class="text-sm">•</span>
+        <span class="text-sm font-medium" id="date"></span>
+      </div>
+    </div>
+  </header>
+
+  <!-- Main -->
+  <main class="flex-1 flex flex-col items-center justify-center px-4 py-12 relative z-10">
+    <div class="w-full max-w-3xl flex flex-col items-center text-center gap-10">
+
+      <div class="flex flex-col gap-4">
+        <h1 class="text-4xl md:text-5xl lg:text-6xl font-extrabold tracking-tight text-slate-900 dark:text-white leading-tight">
+          Start or join a meeting
+        </h1>
+        <p class="text-lg md:text-xl text-slate-600 dark:text-slate-400 max-w-xl mx-auto font-medium">
+          Connect, collaborate, and celebrate from anywhere with high-quality video calling.
+        </p>
+      </div>
+
+      <div class="w-full max-w-md flex flex-col gap-4 mt-4">
+        <!-- New Meeting button -->
+        <button id="newMeetingBtn" class="group w-full flex items-center justify-center gap-3 bg-black hover:bg-black/90 text-white dark:bg-white dark:hover:bg-white/90 dark:text-black rounded-xl py-4 px-6 text-lg font-semibold transition-all shadow-sm hover:shadow-md active:scale-[0.98]">
+          <span class="material-symbols-outlined transition-transform group-hover:scale-110">video_call</span>
+          New Meeting
+        </button>
+
+        <!-- Join with code -->
+        <div class="relative flex items-center w-full mt-2">
+          <div class="absolute inset-y-0 left-0 pl-4 flex items-center pointer-events-none">
+            <span class="material-symbols-outlined text-slate-400">keyboard</span>
+          </div>
+          <input
+            id="meetingCodeInput"
+            class="w-full pl-12 pr-24 py-4 bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-xl text-base focus:ring-2 focus:ring-black/50 dark:focus:ring-white/50 focus:border-black dark:focus:border-white outline-none transition-all shadow-sm dark:text-white placeholder:text-slate-400 dark:placeholder:text-slate-500"
+            placeholder="Enter a meeting code or link"
+            type="text"
+          />
+          <div class="absolute inset-y-0 right-0 pr-2 flex items-center">
+            <button id="joinBtn" class="text-slate-400 hover:text-black dark:hover:text-white font-semibold px-4 py-2 hover:bg-black/10 dark:hover:bg-white/10 rounded-lg transition-colors text-sm">
+              Join
+            </button>
+          </div>
+        </div>
+      </div>
+
+      <div class="mt-8 text-sm text-slate-500 dark:text-slate-400 font-medium">
+        No account required to join a meeting.
+      </div>
+    </div>
+  </main>
+
+  <!-- Footer -->
+  <footer class="w-full max-w-7xl mx-auto px-6 py-8 relative z-10">
+    <div class="flex flex-col sm:flex-row items-center justify-center gap-4 sm:gap-8 text-sm text-slate-500 dark:text-slate-400 font-medium">
+      <a class="hover:text-black dark:hover:text-white transition-colors flex items-center gap-1" href="#">
+        <span class="material-symbols-outlined text-[18px]">info</span>
+        Learn more
+      </a>
+      <a class="hover:text-black dark:hover:text-white transition-colors flex items-center gap-1" href="#">
+        <span class="material-symbols-outlined text-[18px]">help</span>
+        Help
+      </a>
+      <a class="hover:text-black dark:hover:text-white transition-colors flex items-center gap-1" href="#">
+        <span class="material-symbols-outlined text-[18px]">policy</span>
+        Terms &amp; Privacy
+      </a>
+    </div>
+  </footer>
+
+  <script>
+    // Live clock and date in header
+    function updateClock() {
+      const now = new Date();
+      document.getElementById('clock').textContent = now.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+      document.getElementById('date').textContent = now.toLocaleDateString([], { weekday: 'short', month: 'short', day: 'numeric' });
+    }
+    updateClock();
+    setInterval(updateClock, 1000);
+
+    // Placeholder — will be wired to WebSocket in the next step
+    document.getElementById('newMeetingBtn').addEventListener('click', () => {
+      alert('New Meeting — coming soon!');
+    });
+
+    document.getElementById('joinBtn').addEventListener('click', () => {
+      const code = document.getElementById('meetingCodeInput').value.trim();
+      if (!code) return;
+      alert(`Joining: ${code} — coming soon!`);
+    });
+  </script>
+
+</body>
+</html>
