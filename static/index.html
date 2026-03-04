@@ -16,11 +16,9 @@
         extend: {
           colors: {
             "background-light": "#f6f7f8",
-            "background-dark": "#101922",
+            "background-dark":  "#101922",
           },
-          fontFamily: {
-            "display": ["Inter", "sans-serif"]
-          },
+          fontFamily: { "display": ["Inter", "sans-serif"] },
           borderRadius: { "DEFAULT": "0.25rem", "lg": "0.5rem", "xl": "0.75rem", "full": "9999px" },
         },
       },
@@ -30,62 +28,59 @@
     .material-symbols-outlined {
       font-variation-settings: 'FILL' 0, 'wght' 400, 'GRAD' 0, 'opsz' 24;
     }
+    /* Mirror local video so it feels like a selfie camera */
+    #localVideo { transform: scaleX(-1); }
   </style>
 </head>
-<body class="font-display bg-background-light dark:bg-background-dark text-slate-900 dark:text-slate-100 min-h-screen flex flex-col relative overflow-hidden selection:bg-black/20 selection:text-black dark:selection:bg-white/20 dark:selection:text-white">
 
-  <!-- Background gradients -->
+<body class="font-display bg-background-light dark:bg-background-dark text-slate-900 dark:text-slate-100 min-h-screen flex flex-col">
+
+  <!-- Subtle background gradients (only visible on non-meeting screens) -->
   <div class="absolute inset-0 bg-[radial-gradient(circle_at_top_right,rgba(0,0,0,0.05),transparent_40%)] dark:bg-[radial-gradient(circle_at_top_right,rgba(255,255,255,0.05),transparent_40%)] pointer-events-none"></div>
   <div class="absolute inset-0 bg-[radial-gradient(circle_at_bottom_left,rgba(0,0,0,0.03),transparent_40%)] dark:bg-[radial-gradient(circle_at_bottom_left,rgba(255,255,255,0.03),transparent_40%)] pointer-events-none"></div>
 
-  <!-- Header -->
-  <header class="flex items-center justify-between px-6 py-4 relative z-10 w-full max-w-7xl mx-auto">
-    <div class="flex items-center gap-2 text-slate-900 dark:text-white">
-      <div class="flex items-center justify-center w-10 h-10 rounded-xl bg-black/10 text-black dark:bg-white/10 dark:text-white">
+  <!-- ═══════════════════════════════════════════════════════
+       SHARED HEADER  (hidden when meeting screen is active)
+       ═══════════════════════════════════════════════════════ -->
+  <header id="mainHeader" class="flex items-center justify-between px-6 py-4 relative z-10 w-full max-w-7xl mx-auto">
+    <a href="/" class="flex items-center gap-2 text-slate-900 dark:text-white">
+      <div class="flex items-center justify-center w-10 h-10 rounded-xl bg-black/10 dark:bg-white/10">
         <span class="material-symbols-outlined text-2xl">videocam</span>
       </div>
       <h2 class="text-xl font-bold tracking-tight">OpenMeet</h2>
-    </div>
-    <div class="flex items-center gap-6">
-      <div class="hidden sm:flex items-center gap-2 text-slate-600 dark:text-slate-400">
-        <span class="text-sm font-medium" id="clock"></span>
-        <span class="text-sm">•</span>
-        <span class="text-sm font-medium" id="date"></span>
-      </div>
+    </a>
+    <div class="hidden sm:flex items-center gap-2 text-slate-600 dark:text-slate-400">
+      <span class="text-sm font-medium" id="clock"></span>
+      <span class="text-sm">|</span>
+      <span class="text-sm font-medium" id="date"></span>
     </div>
   </header>
 
-  <!-- Main -->
-  <main class="flex-1 flex flex-col items-center justify-center px-4 py-12 relative z-10">
+  <!-- ═══════════════════════════════════════════════════════
+       SCREEN 1 — Landing  (no meetID in URL)
+       ═══════════════════════════════════════════════════════ -->
+  <main id="screen-landing" class="hidden flex-1 flex flex-col items-center justify-center px-4 py-12 relative z-10">
     <div class="w-full max-w-3xl flex flex-col items-center text-center gap-10">
-
       <div class="flex flex-col gap-4">
-        <h1 class="text-4xl md:text-5xl lg:text-6xl font-extrabold tracking-tight text-slate-900 dark:text-white leading-tight">
+        <h1 class="text-4xl md:text-5xl lg:text-6xl font-extrabold tracking-tight leading-tight">
           Start or join a meeting
         </h1>
         <p class="text-lg md:text-xl text-slate-600 dark:text-slate-400 max-w-xl mx-auto font-medium">
-          Connect, collaborate, and celebrate from anywhere with high-quality video calling.
+          Connect, collaborate using OpenMeet.
         </p>
       </div>
-
       <div class="w-full max-w-md flex flex-col gap-4 mt-4">
-        <!-- New Meeting button -->
         <button id="newMeetingBtn" class="group w-full flex items-center justify-center gap-3 bg-black hover:bg-black/90 text-white dark:bg-white dark:hover:bg-white/90 dark:text-black rounded-xl py-4 px-6 text-lg font-semibold transition-all shadow-sm hover:shadow-md active:scale-[0.98]">
-          <span class="material-symbols-outlined transition-transform group-hover:scale-110">video_call</span>
+          <span class="material-symbols-outlined">video_call</span>
           New Meeting
         </button>
-
-        <!-- Join with code -->
         <div class="relative flex items-center w-full mt-2">
           <div class="absolute inset-y-0 left-0 pl-4 flex items-center pointer-events-none">
             <span class="material-symbols-outlined text-slate-400">keyboard</span>
           </div>
-          <input
-            id="meetingCodeInput"
-            class="w-full pl-12 pr-24 py-4 bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-xl text-base focus:ring-2 focus:ring-black/50 dark:focus:ring-white/50 focus:border-black dark:focus:border-white outline-none transition-all shadow-sm dark:text-white placeholder:text-slate-400 dark:placeholder:text-slate-500"
-            placeholder="Enter a meeting code or link"
-            type="text"
-          />
+          <input id="meetIDInput"
+            class="w-full pl-12 pr-24 py-4 bg-white dark:bg-slate-800 border border-black dark:border-white rounded-xl text-base outline-none dark:text-white placeholder:text-slate-400 dark:placeholder:text-slate-500"
+            placeholder="Enter a meet ID or link" type="text"/>
           <div class="absolute inset-y-0 right-0 pr-2 flex items-center">
             <button id="joinBtn" class="text-slate-400 hover:text-black dark:hover:text-white font-semibold px-4 py-2 hover:bg-black/10 dark:hover:bg-white/10 rounded-lg transition-colors text-sm">
               Join
@@ -93,52 +88,194 @@
           </div>
         </div>
       </div>
+    </div>
+  </main>
 
-      <div class="mt-8 text-sm text-slate-500 dark:text-slate-400 font-medium">
-        No account required to join a meeting.
+  <!-- ═══════════════════════════════════════════════════════
+       SCREEN 2 — Knock  (guest is about to ask to join)
+       ═══════════════════════════════════════════════════════ -->
+  <main id="screen-knock" class="hidden flex-1 flex flex-col items-center justify-center px-4 py-12 relative z-10">
+    <div class="w-full max-w-sm flex flex-col items-center text-center gap-6">
+      <div class="w-16 h-16 rounded-full bg-black/10 dark:bg-white/10 flex items-center justify-center">
+        <span class="material-symbols-outlined text-3xl">lock</span>
+      </div>
+      <div class="flex flex-col gap-1">
+        <h2 class="text-2xl font-bold">Ready to join?</h2>
+        <p class="text-slate-500 dark:text-slate-400 text-sm mt-1">Meeting ID</p>
+        <p class="text-xl font-mono font-bold tracking-widest mt-1" id="knockMeetID"></p>
+      </div>
+      <p class="text-slate-500 dark:text-slate-400 text-sm">
+        The host will be notified and will let you in.<br/>
+        Make sure the host has already started the meeting.
+      </p>
+      <div class="flex flex-col gap-3 w-full">
+        <button id="askToJoinBtn" class="w-full bg-black hover:bg-black/90 text-white dark:bg-white dark:hover:bg-white/90 dark:text-black rounded-xl py-4 font-semibold transition-all active:scale-[0.98]">
+          Ask to join
+        </button>
+        <button id="knockCancelBtn" class="w-full text-slate-500 hover:text-black dark:hover:text-white py-2 font-medium transition-colors text-sm">
+          Cancel
+        </button>
       </div>
     </div>
   </main>
 
-  <!-- Footer -->
-  <footer class="w-full max-w-7xl mx-auto px-6 py-8 relative z-10">
-    <div class="flex flex-col sm:flex-row items-center justify-center gap-4 sm:gap-8 text-sm text-slate-500 dark:text-slate-400 font-medium">
-      <a class="hover:text-black dark:hover:text-white transition-colors flex items-center gap-1" href="#">
-        <span class="material-symbols-outlined text-[18px]">info</span>
-        Learn more
+  <!-- ═══════════════════════════════════════════════════════
+       SCREEN 3 — Waiting  (guest sent knock, awaiting host)
+       ═══════════════════════════════════════════════════════ -->
+  <main id="screen-waiting" class="hidden flex-1 flex flex-col items-center justify-center px-4 py-12 relative z-10">
+    <div class="w-full max-w-sm flex flex-col items-center text-center gap-6">
+      <!-- Spinning ring -->
+      <div class="w-16 h-16 rounded-full border-4 border-slate-200 dark:border-slate-700 border-t-black dark:border-t-white animate-spin"></div>
+      <div class="flex flex-col gap-2">
+        <h2 class="text-2xl font-bold">Waiting to be let in</h2>
+        <p class="text-slate-500 dark:text-slate-400 text-sm">The host has been notified. Hang tight!</p>
+      </div>
+      <button id="waitingCancelBtn" class="text-slate-500 hover:text-black dark:hover:text-white py-2 font-medium transition-colors text-sm">
+        Cancel
+      </button>
+    </div>
+  </main>
+
+  <!-- ═══════════════════════════════════════════════════════
+       SCREEN 4 — Meeting  (full-screen dark video room)
+       ═══════════════════════════════════════════════════════ -->
+  <div id="screen-meeting" class="hidden fixed inset-0 z-50 bg-slate-950 flex flex-col font-display">
+
+    <!-- Top bar: logo + meetID + copy -->
+    <div class="flex items-center justify-between px-4 py-3 bg-slate-900">
+      <a href="/" class="flex items-center gap-2 text-white">
+        <span class="material-symbols-outlined text-xl">videocam</span>
+        <span class="font-bold text-sm">OpenMeet</span>
       </a>
-      <a class="hover:text-black dark:hover:text-white transition-colors flex items-center gap-1" href="#">
-        <span class="material-symbols-outlined text-[18px]">help</span>
-        Help
-      </a>
-      <a class="hover:text-black dark:hover:text-white transition-colors flex items-center gap-1" href="#">
-        <span class="material-symbols-outlined text-[18px]">policy</span>
-        Terms &amp; Privacy
+      <!-- meetID shown here so host can share it -->
+      <div class="flex items-center gap-2 bg-slate-800 rounded-lg px-3 py-1.5">
+        <span class="text-slate-300 text-sm font-mono tracking-wider" id="meetIDBar"></span>
+        <button id="copyMeetIDBtn" title="Copy meeting link" class="text-slate-400 hover:text-white transition-colors">
+          <span class="material-symbols-outlined text-[16px]">content_copy</span>
+        </button>
+      </div>
+      <!-- Empty div keeps meetID centered -->
+      <div class="w-[100px]"></div>
+    </div>
+
+    <!-- Video area -->
+    <div class="flex-1 relative flex items-center justify-center p-4 overflow-hidden">
+
+      <!-- Remote video: main / large view (fills the area) -->
+      <video id="remoteVideo"
+        class="w-full max-w-4xl rounded-2xl bg-slate-800 aspect-video object-cover"
+        autoplay playsinline>
+      </video>
+
+      <!-- Status overlay: shown on top of remote video when no peer is connected yet -->
+      <p id="meetingStatus"
+        class="absolute inset-0 flex items-center justify-center text-slate-400 text-sm pointer-events-none">
+      </p>
+
+      <!-- Local video: picture-in-picture in bottom-right corner -->
+      <video id="localVideo"
+        class="absolute bottom-4 right-4 w-44 rounded-xl bg-slate-800 aspect-video object-cover shadow-2xl border border-slate-700"
+        autoplay muted playsinline>
+      </video>
+
+      <!-- Knock notification — floats at top, shown to HOST when guest knocks -->
+      <div id="knockNotification"
+        class="hidden absolute top-4 left-1/2 -translate-x-1/2 bg-slate-800 border border-slate-700 rounded-2xl px-5 py-4 flex items-center gap-4 shadow-2xl">
+        <div class="w-10 h-10 rounded-full bg-slate-700 flex items-center justify-center flex-shrink-0">
+          <span class="material-symbols-outlined text-white text-xl">person</span>
+        </div>
+        <div class="text-left">
+          <p class="text-white font-semibold text-sm">Someone wants to join</p>
+          <p class="text-slate-400 text-xs">Let them in?</p>
+        </div>
+        <div class="flex gap-2 ml-2">
+          <button id="denyBtn"  class="bg-red-600   hover:bg-red-700   text-white rounded-xl px-3 py-1.5 text-sm font-semibold transition-colors">Deny</button>
+          <button id="admitBtn" class="bg-green-600 hover:bg-green-700 text-white rounded-xl px-3 py-1.5 text-sm font-semibold transition-colors">Admit</button>
+        </div>
+      </div>
+
+    </div>
+
+    <!-- Bottom controls: mic | leave | camera -->
+    <div class="flex items-center justify-center gap-4 py-5 bg-slate-900">
+      <button id="micBtn" title="Toggle microphone"
+        class="w-12 h-12 rounded-full bg-slate-700 hover:bg-slate-600 flex items-center justify-center text-white transition-colors">
+        <span class="material-symbols-outlined">mic</span>
+      </button>
+      <button id="leaveBtn" title="Leave meeting"
+        class="h-12 px-8 rounded-full bg-red-600 hover:bg-red-700 flex items-center justify-center text-white transition-colors">
+        <span class="material-symbols-outlined">call_end</span>
+      </button>
+      <button id="cameraBtn" title="Toggle camera"
+        class="w-12 h-12 rounded-full bg-slate-700 hover:bg-slate-600 flex items-center justify-center text-white transition-colors">
+        <span class="material-symbols-outlined">videocam</span>
+      </button>
+    </div>
+
+  </div>
+
+  <!-- ═══════════════════════════════════════════════════════
+       SCREEN 5 — Denied  (host rejected the guest)
+       ═══════════════════════════════════════════════════════ -->
+  <main id="screen-denied" class="hidden flex-1 flex flex-col items-center justify-center px-4 py-12 relative z-10">
+    <div class="w-full max-w-sm flex flex-col items-center text-center gap-6">
+      <div class="w-16 h-16 rounded-full bg-red-100 dark:bg-red-900/30 flex items-center justify-center">
+        <span class="material-symbols-outlined text-3xl text-red-600">block</span>
+      </div>
+      <div class="flex flex-col gap-2">
+        <h2 class="text-2xl font-bold">Entry denied</h2>
+        <p class="text-slate-500 dark:text-slate-400 text-sm">The host didn't let you into this meeting.</p>
+      </div>
+      <a href="/" class="bg-black hover:bg-black/90 text-white dark:bg-white dark:hover:bg-white/90 dark:text-black rounded-xl py-3 px-8 font-semibold transition-all">
+        Return to home
       </a>
     </div>
+  </main>
+
+  <!-- ═══════════════════════════════════════════════════════
+       SCREEN 6 — Full  (3rd person tried to join)
+       ═══════════════════════════════════════════════════════ -->
+  <main id="screen-full" class="hidden flex-1 flex flex-col items-center justify-center px-4 py-12 relative z-10">
+    <div class="w-full max-w-sm flex flex-col items-center text-center gap-6">
+      <div class="w-16 h-16 rounded-full bg-amber-100 dark:bg-amber-900/30 flex items-center justify-center">
+        <span class="material-symbols-outlined text-3xl text-amber-600">group_off</span>
+      </div>
+      <div class="flex flex-col gap-2">
+        <h2 class="text-2xl font-bold">Meeting is full</h2>
+        <p class="text-slate-500 dark:text-slate-400 text-sm">This meeting already has 2 participants. Try again when someone leaves.</p>
+      </div>
+      <a href="/" class="bg-black hover:bg-black/90 text-white dark:bg-white dark:hover:bg-white/90 dark:text-black rounded-xl py-3 px-8 font-semibold transition-all">
+        Return to home
+      </a>
+    </div>
+  </main>
+
+  <!-- ═══════════════════════════════════════════════════════
+       SCREEN 7 — Ended  (host left / closed the tab)
+       ═══════════════════════════════════════════════════════ -->
+  <main id="screen-ended" class="hidden flex-1 flex flex-col items-center justify-center px-4 py-12 relative z-10">
+    <div class="w-full max-w-sm flex flex-col items-center text-center gap-6">
+      <div class="w-16 h-16 rounded-full bg-slate-200 dark:bg-slate-700 flex items-center justify-center">
+        <span class="material-symbols-outlined text-3xl text-slate-600 dark:text-slate-300">call_end</span>
+      </div>
+      <div class="flex flex-col gap-2">
+        <h2 class="text-2xl font-bold">Meeting ended</h2>
+        <p class="text-slate-500 dark:text-slate-400 text-sm">The host has ended this meeting.</p>
+      </div>
+      <a href="/" class="bg-black hover:bg-black/90 text-white dark:bg-white dark:hover:bg-white/90 dark:text-black rounded-xl py-3 px-8 font-semibold transition-all">
+        Return to home
+      </a>
+    </div>
+  </main>
+
+  <!-- SHARED FOOTER (hidden when meeting screen is active) -->
+  <footer id="mainFooter" class="relative z-10 py-6 flex items-center justify-center">
+    <a href="https://github.com/shubhamatkal/OpenMeet"
+      class="text-sm text-slate-500 dark:text-slate-400 hover:text-black dark:hover:text-white transition-colors">
+      GitHub
+    </a>
   </footer>
 
-  <script>
-    // Live clock and date in header
-    function updateClock() {
-      const now = new Date();
-      document.getElementById('clock').textContent = now.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
-      document.getElementById('date').textContent = now.toLocaleDateString([], { weekday: 'short', month: 'short', day: 'numeric' });
-    }
-    updateClock();
-    setInterval(updateClock, 1000);
-
-    // Placeholder — will be wired to WebSocket in the next step
-    document.getElementById('newMeetingBtn').addEventListener('click', () => {
-      alert('New Meeting — coming soon!');
-    });
-
-    document.getElementById('joinBtn').addEventListener('click', () => {
-      const code = document.getElementById('meetingCodeInput').value.trim();
-      if (!code) return;
-      alert(`Joining: ${code} — coming soon!`);
-    });
-  </script>
-
+  <script src="app.js"></script>
 </body>
 </html>
