@@ -58,6 +58,13 @@ createApp({
       linkCopied:          false,
       showParticipants:    false,
 
+      // Meeting type (1to1 | group)
+      meetType: '1to1',
+
+      // SFU group meeting state
+      sfuRoomPeers: [],   // [{id, name, avatar}] — from room-state messages
+      sfuPeers:     [],   // [{id, name, avatar}] — peers with active media
+
       // Duplicate session
       alreadyInMeet: false,
       forceJoining:  false,
@@ -207,10 +214,16 @@ createApp({
       const params = new URLSearchParams(window.location.search);
       const mid    = params.get('meetID');
       if (mid) {
-        state.meetID = mid;
-        state.isHost = sessionStorage.getItem(`host_${mid}`) === 'true';
-        if (state.isHost) enterMeetingAsHost();
-        else state.screen = 'knock';
+        state.meetID  = mid;
+        state.isHost  = sessionStorage.getItem(`host_${mid}`) === 'true';
+        state.meetType = params.get('type') || sessionStorage.getItem(`type_${mid}`) || '1to1';
+        if (state.meetType === 'group') {
+          enterGroupMeeting();
+        } else if (state.isHost) {
+          enterMeetingAsHost();
+        } else {
+          state.screen = 'knock';
+        }
       } else {
         state.screen = 'landing';
       }
@@ -248,12 +261,14 @@ createApp({
     }
 
     // ── Meeting navigation ──
-    function newMeeting() {
+    function newMeeting(type = '1to1') {
       state.showMeetTypeModal = false;
       const id = generateMeetID();
       sessionStorage.setItem(`host_${id}`, 'true');
+      sessionStorage.setItem(`type_${id}`, type);
       const url = new URL(window.location.href);
       url.searchParams.set('meetID', id);
+      if (type === 'group') url.searchParams.set('type', 'group');
       window.location.href = url.toString();
     }
     function joinMeet() {
@@ -495,6 +510,111 @@ createApp({
       }
     }
 
+    // ── Group meeting (SFU) ──────────────────────────────────────────────────────
+
+    async function enterGroupMeeting() {
+      state.screen = 'group-meeting';
+      await nextTick();
+      await startCamera();
+      connectSFU();
+    }
+
+    function connectSFU() {
+      const proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
+      ws = new WebSocket(`${proto}//${location.host}/sfu?meetID=${state.meetID}&token=${state.token}`);
+
+      ws.onopen = () => {
+        // Create PeerConnection and send offer to the SFU server.
+        sfuCreateOffer();
+      };
+
+      ws.onmessage = (e) => {
+        let m;
+        try { m = JSON.parse(e.data); } catch { return; }
+        onSFUMessage(m);
+      };
+
+      ws.onclose = () => console.log('[SFU WS] closed');
+      ws.onerror = (err) => console.error('[SFU WS] error', err);
+    }
+
+    function sfuCreateOffer() {
+      pc = new RTCPeerConnection(RTC_CONFIG);
+
+      // Add local tracks.
+      if (localStream) localStream.getTracks().forEach(t => pc.addTrack(t, localStream));
+
+      // ICE trickle to server.
+      pc.onicecandidate = (e) => {
+        if (e.candidate) wsSend({ type: 'ice-candidate', candidate: e.candidate });
+      };
+
+      // Each ontrack event is a remote participant's track.
+      pc.ontrack = async (e) => {
+        const peerID = e.streams[0]?.id;
+        if (!peerID || peerID === state.user?.id) return;
+
+        // Ensure peer entry exists.
+        if (!state.sfuPeers.find(p => p.id === peerID)) {
+          const info = state.sfuRoomPeers.find(p => p.id === peerID) || {};
+          state.sfuPeers.push({ id: peerID, name: info.name || 'Guest', avatar: info.avatar || null });
+        }
+
+        // Wait for the v-for tile to render, then assign srcObject.
+        await nextTick();
+        const vid = document.getElementById(`sfuVideo-${peerID}`);
+        if (vid && e.streams[0]) vid.srcObject = e.streams[0];
+      };
+
+      pc.onconnectionstatechange = () => {
+        console.log('[SFU WebRTC]', pc.connectionState);
+        if (pc.connectionState === 'disconnected' || pc.connectionState === 'failed') {
+          // Remove all remote peers on disconnect.
+          state.sfuPeers = [];
+        }
+      };
+
+      pc.createOffer().then(offer => {
+        pc.setLocalDescription(offer);
+        wsSend({ type: 'offer', sdp: offer.sdp });
+      });
+    }
+
+    async function onSFUMessage(msg) {
+      switch (msg.type) {
+
+        case 'answer':
+          if (pc) await pc.setRemoteDescription({ type: 'answer', sdp: msg.sdp });
+          break;
+
+        case 'offer':
+          // Server-initiated renegotiation (new participant joined).
+          if (!pc) return;
+          await pc.setRemoteDescription({ type: 'offer', sdp: msg.sdp });
+          const answer = await pc.createAnswer();
+          await pc.setLocalDescription(answer);
+          wsSend({ type: 'answer', sdp: answer.sdp });
+          break;
+
+        case 'ice-candidate':
+          if (pc && msg.candidate) await pc.addIceCandidate(msg.candidate);
+          break;
+
+        case 'room-state':
+          // Update participant metadata (names, avatars).
+          state.sfuRoomPeers = msg.peers || [];
+          // Sync names/avatars into sfuPeers.
+          state.sfuPeers = state.sfuPeers.map(sp => {
+            const info = state.sfuRoomPeers.find(p => p.id === sp.id);
+            return info ? { ...sp, name: info.name, avatar: info.avatar } : sp;
+          });
+          // Remove peers that left.
+          const activeIDs = new Set(state.sfuRoomPeers.map(p => p.id));
+          state.sfuPeers = state.sfuPeers.filter(p => activeIDs.has(p.id));
+          break;
+      }
+    }
+
     // ── Host enters meeting ──
     async function enterMeetingAsHost() {
       const alreadyIn = await checkIfAlreadyInMeet();
@@ -643,6 +763,11 @@ createApp({
       get remoteSpeaking()      { return state.remoteSpeaking; },
       get countdownText()       { return state.countdownText; },
       get participants()        { return getParticipants(); },
+
+      // Group meeting (SFU)
+      get meetType()            { return state.meetType; },
+      get sfuRoomPeers()        { return state.sfuRoomPeers; },
+      get sfuPeers()            { return state.sfuPeers; },
 
       // Functions
       avatarURL,

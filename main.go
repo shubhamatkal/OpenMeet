@@ -40,6 +40,9 @@ func main() {
 	// WebSocket signaling (protected)
 	mux.Handle("/ws", middleware.Auth(http.HandlerFunc(handlers.HandleWS)))
 
+	// SFU group meetings (protected)
+	mux.Handle("/sfu", middleware.Auth(http.HandlerFunc(handlers.HandleSFU)))
+
 	// Static files (must be last — catch-all)
 	mux.Handle("/", http.FileServer(http.Dir("./static")))
 
