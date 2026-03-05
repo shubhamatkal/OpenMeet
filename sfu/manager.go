@@ -15,9 +15,10 @@ func GetOrCreate(meetID string) *Room {
 	r, ok := rooms[meetID]
 	if !ok {
 		r = &Room{
-			ID:           meetID,
-			peers:        make(map[string]*Peer),
-			broadcasters: make(map[string]*TrackBroadcaster),
+			ID:            meetID,
+			peers:         make(map[string]*Peer),
+			pendingKnocks: make(map[string]chan bool),
+			broadcasters:  make(map[string]*TrackBroadcaster),
 		}
 		rooms[meetID] = r
 	}

@@ -1,6 +1,6 @@
 'use strict';
 
-const { createApp, reactive, nextTick, onMounted, onUnmounted } = Vue;
+const { createApp, reactive, nextTick, onMounted, onUnmounted, watch } = Vue;
 
 // ─── Local avatars ────────────────────────────────────────────────────────────
 const AVATARS = ['female1.png', 'female2.png', 'male1.png', 'male2.png'];
@@ -64,6 +64,8 @@ createApp({
       // SFU group meeting state
       sfuRoomPeers: [],   // [{id, name, avatar}] — from room-state messages
       sfuPeers:     [],   // [{id, name, avatar}] — peers with active media
+      sfuSpeaking:  {},   // peerID → boolean (speaking indicator per remote peer)
+      sfuKnocker:   null, // {id, name, avatar} — person knocking (shown to host)
 
       // Duplicate session
       alreadyInMeet: false,
@@ -97,6 +99,19 @@ createApp({
     let localStream    = null;
     let localAudioCtx  = null;
     let remoteAudioCtx = null;
+
+    // ── SFU non-reactive refs ──
+    const sfuStreams   = new Map(); // peerID → MediaStream
+    const sfuAudioCtxs = new Map(); // peerID → AudioContext
+
+    // Re-assign srcObjects whenever sfuPeers list changes (e.g. after renegotiation re-render).
+    watch(() => state.sfuPeers.length, async () => {
+      await nextTick();
+      for (const [peerID, stream] of sfuStreams) {
+        const vid = document.getElementById(`sfuVideo-${peerID}`);
+        if (vid && vid.srcObject !== stream) vid.srcObject = stream;
+      }
+    });
 
     // ── Clock ──
     function updateClock() {
@@ -288,7 +303,8 @@ createApp({
       try {
         localStream = await navigator.mediaDevices.getUserMedia({ video: true, audio: true });
         await nextTick();
-        const vid = document.getElementById('localVideo');
+        // Assign to whichever local video element is currently in the DOM.
+        const vid = document.getElementById('localVideo') || document.getElementById('localVideoGroup');
         if (vid) vid.srcObject = localStream;
         startLocalAudio();
       } catch (err) { console.error('Camera error:', err); }
@@ -352,6 +368,37 @@ createApp({
     function stopRemoteAudio() {
       if (remoteAudioCtx) { remoteAudioCtx.close(); remoteAudioCtx = null; }
       state.remoteSpeaking = false;
+    }
+
+    // Per-peer audio analysis for group meetings.
+    function startSFURemoteAudio(peerID, stream) {
+      // Stop any existing context for this peer first.
+      const existing = sfuAudioCtxs.get(peerID);
+      if (existing) { try { existing.close(); } catch {} sfuAudioCtxs.delete(peerID); }
+      try {
+        const ctx      = new (window.AudioContext || window.webkitAudioContext)();
+        const src      = ctx.createMediaStreamSource(stream);
+        const analyser = ctx.createAnalyser();
+        analyser.fftSize = 512;
+        analyser.smoothingTimeConstant = 0.5;
+        src.connect(analyser);
+        const data = new Uint8Array(analyser.frequencyBinCount);
+        sfuAudioCtxs.set(peerID, ctx);
+        function tick() {
+          if (!ctx || ctx.state === 'closed') return;
+          analyser.getByteFrequencyData(data);
+          const avg = data.slice(2, 20).reduce((a, b) => a + b, 0) / 18;
+          state.sfuSpeaking[peerID] = avg > 20;
+          requestAnimationFrame(tick);
+        }
+        tick();
+      } catch (e) { console.warn('SFU audio analysis unavailable', e); }
+    }
+
+    function stopSFURemoteAudio(peerID) {
+      const ctx = sfuAudioCtxs.get(peerID);
+      if (ctx) { try { ctx.close(); } catch {} sfuAudioCtxs.delete(peerID); }
+      delete state.sfuSpeaking[peerID];
     }
 
     // ── WebRTC ──
@@ -513,9 +560,9 @@ createApp({
     // ── Group meeting (SFU) ──────────────────────────────────────────────────────
 
     async function enterGroupMeeting() {
-      state.screen = 'group-meeting';
-      await nextTick();
-      await startCamera();
+      // Show waiting screen while the server decides (first = admitted instantly,
+      // others = wait for host knock flow).
+      state.screen = 'waiting';
       connectSFU();
     }
 
@@ -524,8 +571,8 @@ createApp({
       ws = new WebSocket(`${proto}//${location.host}/sfu?meetID=${state.meetID}&token=${state.token}`);
 
       ws.onopen = () => {
-        // Create PeerConnection and send offer to the SFU server.
-        sfuCreateOffer();
+        // Server will respond with 'admitted' (first or host) or 'waiting' (knocker).
+        // sfuCreateOffer() is called from onSFUMessage once admitted.
       };
 
       ws.onmessage = (e) => {
@@ -550,20 +597,27 @@ createApp({
       };
 
       // Each ontrack event is a remote participant's track.
+      // Multiple tracks (video + audio) share the same stream, so this fires twice per peer.
       pc.ontrack = async (e) => {
-        const peerID = e.streams[0]?.id;
+        const stream = e.streams[0];
+        if (!stream) return;
+        const peerID = stream.id;
         if (!peerID || peerID === state.user?.id) return;
 
-        // Ensure peer entry exists.
+        // Store stream and start per-peer audio analysis.
+        sfuStreams.set(peerID, stream);
+        startSFURemoteAudio(peerID, stream);
+
+        // Add peer to display list if not already there.
         if (!state.sfuPeers.find(p => p.id === peerID)) {
           const info = state.sfuRoomPeers.find(p => p.id === peerID) || {};
           state.sfuPeers.push({ id: peerID, name: info.name || 'Guest', avatar: info.avatar || null });
         }
 
-        // Wait for the v-for tile to render, then assign srcObject.
+        // Assign srcObject after the tile renders.
         await nextTick();
         const vid = document.getElementById(`sfuVideo-${peerID}`);
-        if (vid && e.streams[0]) vid.srcObject = e.streams[0];
+        if (vid && vid.srcObject !== stream) vid.srcObject = stream;
       };
 
       pc.onconnectionstatechange = () => {
@@ -583,6 +637,29 @@ createApp({
     async function onSFUMessage(msg) {
       switch (msg.type) {
 
+        case 'admitted':
+          // Server admitted us — start camera then begin WebRTC handshake.
+          state.screen = 'group-meeting';
+          await nextTick();
+          await startCamera();
+          sfuCreateOffer();
+          break;
+
+        case 'waiting':
+          // Already on waiting screen; nothing extra needed.
+          break;
+
+        case 'denied':
+          closeWebSocket();
+          state.screen = 'denied';
+          startCountdown(5);
+          break;
+
+        case 'knock':
+          // Someone is knocking — show the admit popup to the host.
+          state.sfuKnocker = msg.user || null;
+          break;
+
         case 'answer':
           if (pc) await pc.setRemoteDescription({ type: 'answer', sdp: msg.sdp });
           break;
@@ -600,18 +677,25 @@ createApp({
           if (pc && msg.candidate) await pc.addIceCandidate(msg.candidate);
           break;
 
-        case 'room-state':
-          // Update participant metadata (names, avatars).
+        case 'room-state': {
           state.sfuRoomPeers = msg.peers || [];
-          // Sync names/avatars into sfuPeers.
+          const activeIDs = new Set(state.sfuRoomPeers.map(p => p.id));
+          // Remove peers that have left (also clean up streams and audio).
+          state.sfuPeers = state.sfuPeers.filter(sp => {
+            if (!activeIDs.has(sp.id)) {
+              sfuStreams.delete(sp.id);
+              stopSFURemoteAudio(sp.id);
+              return false;
+            }
+            return true;
+          });
+          // Update names/avatars for remaining peers.
           state.sfuPeers = state.sfuPeers.map(sp => {
             const info = state.sfuRoomPeers.find(p => p.id === sp.id);
             return info ? { ...sp, name: info.name, avatar: info.avatar } : sp;
           });
-          // Remove peers that left.
-          const activeIDs = new Set(state.sfuRoomPeers.map(p => p.id));
-          state.sfuPeers = state.sfuPeers.filter(p => activeIDs.has(p.id));
           break;
+        }
       }
     }
 
@@ -680,6 +764,12 @@ createApp({
 
     function leaveMeeting() {
       closePeerConnection(); stopCamera(); closeWebSocket();
+      sfuStreams.clear();
+      for (const [, ctx] of sfuAudioCtxs) { try { ctx.close(); } catch {} }
+      sfuAudioCtxs.clear();
+      state.sfuPeers = [];
+      state.sfuRoomPeers = [];
+      state.sfuSpeaking = {};
       window.location.href = '/';
     }
 
@@ -690,6 +780,18 @@ createApp({
     function denyKnocker() {
       wsSend({ type: 'deny' });
       state.knocker = null;
+    }
+
+    // SFU group meeting admit / deny
+    function sfuAdmitKnocker() {
+      if (!state.sfuKnocker) return;
+      wsSend({ type: 'admit', userID: state.sfuKnocker.id });
+      state.sfuKnocker = null;
+    }
+    function sfuDenyKnocker() {
+      if (!state.sfuKnocker) return;
+      wsSend({ type: 'deny', userID: state.sfuKnocker.id });
+      state.sfuKnocker = null;
     }
 
     function copyMeetLink() {
@@ -768,6 +870,22 @@ createApp({
       get meetType()            { return state.meetType; },
       get sfuRoomPeers()        { return state.sfuRoomPeers; },
       get sfuPeers()            { return state.sfuPeers; },
+      get sfuSpeaking()         { return state.sfuSpeaking; },
+      get sfuKnocker()          { return state.sfuKnocker; },
+      get sfuParticipants() {
+        return state.sfuRoomPeers.map(p => ({
+          ...p, isMe: p.id === state.user?.id,
+        }));
+      },
+      get sfuGridStyle() {
+        // Total tiles = local + remotes. Use CSS grid-template to avoid Tailwind CDN scan issues.
+        const total = 1 + state.sfuPeers.length;
+        if (total === 1) return 'grid-template-columns: 1fr; grid-template-rows: 1fr;';
+        if (total === 2) return 'grid-template-columns: 1fr 1fr; grid-template-rows: 1fr;';
+        if (total <= 4) return 'grid-template-columns: 1fr 1fr; grid-template-rows: 1fr 1fr;';
+        if (total <= 6) return 'grid-template-columns: repeat(3, 1fr); grid-template-rows: repeat(2, 1fr);';
+        return 'grid-template-columns: repeat(3, 1fr);';
+      },
 
       // Functions
       avatarURL,
@@ -778,6 +896,7 @@ createApp({
       forceJoin, cancelForceJoin,
       toggleMic, toggleCamera, leaveMeeting,
       admitKnocker, denyKnocker,
+      sfuAdmitKnocker, sfuDenyKnocker,
       copyMeetLink,
     };
   },

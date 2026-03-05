@@ -19,9 +19,10 @@ import (
 
 // signalingMsg is the JSON shape for all WS messages in the SFU path.
 type signalingMsg struct {
-	Type      string                     `json:"type"`
-	SDP       string                     `json:"sdp,omitempty"`
-	Candidate *webrtc.ICECandidateInit   `json:"candidate,omitempty"`
+	Type      string                   `json:"type"`
+	SDP       string                   `json:"sdp,omitempty"`
+	Candidate *webrtc.ICECandidateInit `json:"candidate,omitempty"`
+	UserID    string                   `json:"userID,omitempty"` // for admit / deny
 }
 
 var sfuUpgrader = websocket.Upgrader{
@@ -76,26 +77,63 @@ func HandleSFU(w http.ResponseWriter, r *http.Request) {
 
 	// Join (or create) the room.
 	room := sfu.GetOrCreate(meetID)
+
+	// ── Knock / admit flow ────────────────────────────────────────────────────
+	// If the room already has people, make the new peer knock and wait for the
+	// host to admit or deny them before starting the WebRTC handshake.
+	if !room.IsEmpty() {
+		peer.SendJSON(map[string]any{"type": "waiting"})
+		admitCh := room.Knock(peer)
+
+		// Drain WS in a goroutine so the connection stays alive while waiting.
+		// Signal on wsDone when the client disconnects.
+		wsDone := make(chan struct{})
+		go func() {
+			defer close(wsDone)
+			for {
+				if _, _, err := conn.ReadMessage(); err != nil {
+					return
+				}
+			}
+		}()
+
+		select {
+		case admitted := <-admitCh:
+			if !admitted {
+				peer.SendJSON(map[string]any{"type": "denied"})
+				log.Printf("sfu: %s denied entry to room %s", user.Name, meetID)
+				return
+			}
+			peer.SendJSON(map[string]any{"type": "admitted"})
+			log.Printf("sfu: %s admitted to room %s", user.Name, meetID)
+		case <-wsDone:
+			room.DenyKnocker(userID)
+			log.Printf("sfu: %s disconnected while waiting for admission", user.Name)
+			return
+		}
+	}
+
+	// ── Peer is admitted (or was first in room) ───────────────────────────────
+	// Tell the browser it's clear to start camera + WebRTC.
+	peer.SendJSON(map[string]any{"type": "admitted"})
+
 	room.Join(peer)
 	defer func() {
 		room.Leave(userID)
 		room.BroadcastRoomState()
 	}()
 
-	// Tell everyone (including the new joiner) who is in the room.
 	room.BroadcastRoomState()
-
-	log.Printf("sfu: %s (%s) connected to room %s", userID, user.Name, meetID)
+	log.Printf("sfu: %s (%s) joined room %s", userID, user.Name, meetID)
 
 	// ICE candidate trickle — send server candidates to browser.
 	pc.OnICECandidate(func(c *webrtc.ICECandidate) {
 		if c == nil {
 			return
 		}
-		init := c.ToJSON()
 		peer.SendJSON(map[string]any{
 			"type":      "ice-candidate",
-			"candidate": init,
+			"candidate": c.ToJSON(),
 		})
 	})
 
@@ -105,7 +143,7 @@ func HandleSFU(w http.ResponseWriter, r *http.Request) {
 		room.OnTrack(peer, remote)
 	})
 
-	// WebSocket read loop — handle offer, answer, ice-candidate from browser.
+	// WebSocket read loop — handle offer, answer, ice-candidate, admit, deny.
 	for {
 		_, raw, err := conn.ReadMessage()
 		if err != nil {
@@ -122,18 +160,12 @@ func HandleSFU(w http.ResponseWriter, r *http.Request) {
 		switch msg.Type {
 
 		case "offer":
-			// Browser sends an offer. This happens on initial connect AND on renegotiation
-			// triggered by the browser (e.g., adding screen share later).
 			sdp := webrtc.SessionDescription{Type: webrtc.SDPTypeOffer, SDP: msg.SDP}
 			if err := pc.SetRemoteDescription(sdp); err != nil {
 				log.Println("sfu: SetRemoteDescription:", err)
 				continue
 			}
-
-			// Add existing peers' tracks to this peer's PC before creating answer,
-			// so the initial SDP includes them.
 			room.AddExistingTracksTo(peer)
-
 			answer, err := pc.CreateAnswer(nil)
 			if err != nil {
 				log.Println("sfu: CreateAnswer:", err)
@@ -143,13 +175,9 @@ func HandleSFU(w http.ResponseWriter, r *http.Request) {
 				log.Println("sfu: SetLocalDescription:", err)
 				continue
 			}
-			peer.SendJSON(map[string]any{
-				"type": "answer",
-				"sdp":  answer.SDP,
-			})
+			peer.SendJSON(map[string]any{"type": "answer", "sdp": answer.SDP})
 
 		case "answer":
-			// Browser answers a renegotiation offer that the server sent.
 			sdp := webrtc.SessionDescription{Type: webrtc.SDPTypeAnswer, SDP: msg.SDP}
 			if err := pc.SetRemoteDescription(sdp); err != nil {
 				log.Println("sfu: SetRemoteDescription (answer):", err)
@@ -160,6 +188,16 @@ func HandleSFU(w http.ResponseWriter, r *http.Request) {
 				if err := pc.AddICECandidate(*msg.Candidate); err != nil {
 					log.Println("sfu: AddICECandidate:", err)
 				}
+			}
+
+		case "admit":
+			if msg.UserID != "" {
+				room.AdmitKnocker(msg.UserID)
+			}
+
+		case "deny":
+			if msg.UserID != "" {
+				room.DenyKnocker(msg.UserID)
 			}
 		}
 	}

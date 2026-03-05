@@ -14,9 +14,14 @@ func broadcasterKey(peerID, kind string) string {
 
 // Room represents one group meeting.
 type Room struct {
-	ID    string
-	mu    sync.RWMutex
-	peers map[string]*Peer
+	ID     string
+	hostID string // userID of the first peer — they admit/deny knockers
+	mu     sync.RWMutex
+	peers  map[string]*Peer
+
+	// pendingKnocks: peerID → channel that receives true (admit) or false (deny).
+	knockMu      sync.Mutex
+	pendingKnocks map[string]chan bool
 
 	// broadcasters fan out each peer's published tracks to all other peers.
 	// Key: broadcasterKey(peerID, kind)
@@ -24,13 +29,71 @@ type Room struct {
 	broadcasters map[string]*TrackBroadcaster
 }
 
+// IsEmpty returns true if no peers have joined yet.
+func (r *Room) IsEmpty() bool {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	return len(r.peers) == 0
+}
+
 // Join adds a peer to the room. Must be called before SetRemoteDescription so
 // that AddSenderTrack calls are included in the server's answer SDP.
 func (r *Room) Join(p *Peer) {
 	r.mu.Lock()
+	if r.hostID == "" {
+		r.hostID = p.ID // first joiner is the host
+	}
 	r.peers[p.ID] = p
 	r.mu.Unlock()
 	log.Printf("sfu: peer %s (%s) joined room %s", p.ID, p.User.Name, r.ID)
+}
+
+// Knock registers a pending knock and notifies the host.
+// Returns a channel that will receive true (admit) or false (deny).
+func (r *Room) Knock(knocker *Peer) chan bool {
+	ch := make(chan bool, 1)
+
+	r.knockMu.Lock()
+	r.pendingKnocks[knocker.ID] = ch
+	r.knockMu.Unlock()
+
+	// Notify the host.
+	r.mu.RLock()
+	host, ok := r.peers[r.hostID]
+	r.mu.RUnlock()
+	if ok {
+		host.SendJSON(map[string]any{
+			"type": "knock",
+			"user": map[string]any{
+				"id":     knocker.ID,
+				"name":   knocker.User.Name,
+				"avatar": knocker.User.Avatar,
+			},
+		})
+	}
+	return ch
+}
+
+// AdmitKnocker sends true on the knock channel for userID.
+func (r *Room) AdmitKnocker(userID string) {
+	r.knockMu.Lock()
+	ch, ok := r.pendingKnocks[userID]
+	delete(r.pendingKnocks, userID)
+	r.knockMu.Unlock()
+	if ok {
+		ch <- true
+	}
+}
+
+// DenyKnocker sends false on the knock channel for userID.
+func (r *Room) DenyKnocker(userID string) {
+	r.knockMu.Lock()
+	ch, ok := r.pendingKnocks[userID]
+	delete(r.pendingKnocks, userID)
+	r.knockMu.Unlock()
+	if ok {
+		ch <- false
+	}
 }
 
 // AddExistingTracksTo wires up all currently-published tracks from existing peers
