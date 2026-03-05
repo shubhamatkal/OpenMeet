@@ -1,74 +1,21 @@
 'use strict';
 
-// ─── State ────────────────────────────────────────────────────────────────────
-let ws          = null;
-let pc          = null;
-let localStream = null;
-let micOn       = true;
-let cameraOn    = true;
+const { createApp, reactive, computed, onMounted, onUnmounted, nextTick } = Vue;
 
-const meetID = new URLSearchParams(window.location.search).get('meetID');
-const isHost = meetID
-  ? sessionStorage.getItem(`host_${meetID}`) === 'true'
-  : false;
+// ─── Local avatars ────────────────────────────────────────────────────────────
+const AVATARS = ['female1.png', 'female2.png', 'male1.png', 'male2.png'];
 
-// ─── Dark mode ────────────────────────────────────────────────────────────────
-// Reads system preference on first visit; persists choice in localStorage.
-function initDarkMode() {
-  const stored      = localStorage.getItem('theme');
-  const prefersDark = window.matchMedia('(prefers-color-scheme: dark)').matches;
-  const dark        = stored !== null ? stored === 'dark' : prefersDark;
-  document.documentElement.classList.toggle('dark', dark);
-  updateThemeIcon(dark);
+function avatarURL(filename) {
+  return `/avatars/${filename}`;
 }
 
-function toggleDarkMode() {
-  const isDark = document.documentElement.classList.toggle('dark');
-  localStorage.setItem('theme', isDark ? 'dark' : 'light');
-  updateThemeIcon(isDark);
-}
+// ─── WebRTC config ────────────────────────────────────────────────────────────
+const RTC_CONFIG = { iceServers: [{ urls: 'stun:stun.l.google.com:19302' }] };
 
-function updateThemeIcon(isDark) {
-  const icon = document.querySelector('#darkModeBtn .material-symbols-outlined');
-  if (icon) icon.textContent = isDark ? 'light_mode' : 'dark_mode';
-}
-
-initDarkMode();
-document.getElementById('darkModeBtn')?.addEventListener('click', toggleDarkMode);
-
-// ─── Screen router ────────────────────────────────────────────────────────────
-const ALL_SCREENS = ['landing', 'knock', 'waiting', 'meeting', 'denied', 'full', 'ended'];
-
-function showScreen(name) {
-  ALL_SCREENS.forEach(s => {
-    const el = document.getElementById(`screen-${s}`);
-    if (el) el.classList.toggle('hidden', s !== name);
-  });
-  const inMeeting = name === 'meeting';
-  document.getElementById('mainHeader')?.classList.toggle('hidden', inMeeting);
-  document.getElementById('mainFooter')?.classList.toggle('hidden', inMeeting);
-}
-
-// ─── Auto-redirect countdown ──────────────────────────────────────────────────
-// Shows "Returning to home in Ns…" and redirects automatically.
-function startRedirectCountdown(elementId, seconds = 5) {
-  const el = document.getElementById(elementId);
-  if (!el) return;
-  let t = seconds;
-  const tick = () => { el.textContent = `Returning to home in ${t}s…`; };
-  tick();
-  const iv = setInterval(() => {
-    t--;
-    if (t <= 0) { clearInterval(iv); window.location.href = '/'; }
-    else tick();
-  }, 1000);
-}
-
-// ─── Meet ID utilities ────────────────────────────────────────────────────────
+// ─── Meet ID utils ────────────────────────────────────────────────────────────
 function generateMeetID() {
   const chars = 'abcdefghijklmnopqrstuvwxyz0123456789';
-  const seg = (n) =>
-    Array.from({ length: n }, () => chars[Math.floor(Math.random() * chars.length)]).join('');
+  const seg = (n) => Array.from({ length: n }, () => chars[Math.floor(Math.random() * chars.length)]).join('');
   return `${seg(3)}-${seg(4)}-${seg(3)}`;
 }
 
@@ -77,340 +24,532 @@ function parseMeetID(input) {
   catch { return input.trim(); }
 }
 
-function goToMeet(id) {
-  const url = new URL(window.location.href);
-  url.searchParams.set('meetID', id);
-  window.location.href = url.toString();
+// ─── Dark mode ────────────────────────────────────────────────────────────────
+function initDark() {
+  const stored = localStorage.getItem('theme');
+  const prefersDark = window.matchMedia('(prefers-color-scheme: dark)').matches;
+  const dark = stored !== null ? stored === 'dark' : prefersDark;
+  document.documentElement.classList.toggle('dark', dark);
+  return dark;
 }
 
-// ─── Clock ────────────────────────────────────────────────────────────────────
-function updateClock() {
-  const now     = new Date();
-  const timeStr = now.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
-  const dateStr = now.toLocaleDateString([], { weekday: 'short', month: 'short', day: 'numeric' });
-  const clockEl        = document.getElementById('clock');
-  const dateEl         = document.getElementById('date');
-  const meetingClockEl = document.getElementById('meetingClock');
-  if (clockEl)        clockEl.textContent        = timeStr;
-  if (dateEl)         dateEl.textContent          = dateStr;
-  if (meetingClockEl) meetingClockEl.textContent  = timeStr;
-}
-updateClock();
-setInterval(updateClock, 1000);
+// ─── Vue App ──────────────────────────────────────────────────────────────────
+createApp({
+  setup() {
+    // ── State ──
+    const state = reactive({
+      screen: 'auth-login',
+      user: null,
+      token: null,
 
-// ─── Camera ───────────────────────────────────────────────────────────────────
-async function startCamera() {
-  try {
-    localStream = await navigator.mediaDevices.getUserMedia({ video: true, audio: true });
-    const vid = document.getElementById('localVideo');
-    if (vid) vid.srcObject = localStream;
-  } catch (err) {
-    console.error('Camera error:', err);
-  }
-}
+      // Auth forms
+      authForm: { name: '', email: '', password: '', avatar: '' },
+      avatarOptions: AVATARS,
+      authError: '',
+      authSuccess: '',
+      authLoading: false,
+      showPassword: false,
+      pendingResetToken: null,
 
-function stopCamera() {
-  if (!localStream) return;
-  localStream.getTracks().forEach(t => t.stop());
-  localStream = null;
-}
+      // Meeting
+      meetID: null,
+      isHost: false,
+      meetIDInput: '',
+      inviteCardDismissed: false,
+      linkCopied: false,
 
-// ─── UI helpers ───────────────────────────────────────────────────────────────
+      // WebRTC / media
+      micOn: true,
+      localCameraOn: true,
+      remoteMicOn: true,
+      remoteCameraOn: true,
+      remoteConnected: false,
+      remoteUser: null,
+      knocker: null,
 
-// CSS classes for local tile in solo (full-screen) vs PiP mode.
-const LOCAL_SOLO = 'absolute inset-0';
-const LOCAL_PIP  = 'absolute bottom-20 right-4 w-48 aspect-video rounded-2xl overflow-hidden z-10 shadow-2xl border border-white/10';
+      // Countdown
+      countdownText: '',
 
-// Switch the local tile between full-screen (alone) and PiP (peer connected).
-function setRemoteConnected(connected) {
-  document.getElementById('inviteCard')?.classList.toggle('hidden',      connected);
-  document.getElementById('remoteContainer')?.classList.toggle('hidden', !connected);
+      // Clock
+      timeStr: '',
+      dateStr: '',
 
-  const localContainer = document.getElementById('localContainer');
-  if (localContainer) localContainer.className = connected ? LOCAL_PIP : LOCAL_SOLO;
+      // Theme
+      isDark: initDark(),
+    });
 
-  // Mic+name badge only shown in PiP mode
-  document.getElementById('localMicIndicator')?.classList.toggle('hidden', !connected);
+    // ── Refs for WebRTC ──
+    let ws          = null;
+    let pc          = null;
+    let localStream = null;
 
-  // Scale avatar for the container size
-  const circle = document.getElementById('localAvatarCircle');
-  const icon   = document.getElementById('localAvatarIcon');
-  if (circle) circle.className = `${connected ? 'w-14 h-14' : 'w-28 h-28'} rounded-full bg-blue-600 flex items-center justify-center shadow-2xl`;
-  if (icon)   icon.style.fontSize = connected ? '28px' : '56px';
+    // ── Clock ──
+    function updateClock() {
+      const now = new Date();
+      state.timeStr = now.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+      state.dateStr = now.toLocaleDateString([], { weekday: 'short', month: 'short', day: 'numeric' });
+    }
+    updateClock();
+    const clockInterval = setInterval(updateClock, 1000);
 
-  updateParticipantCount(connected ? 2 : 1);
-}
-
-function updateParticipantCount(n) {
-  const el = document.getElementById('participantCount');
-  if (el) el.textContent = n;
-}
-
-// Toggle the mic icon on a video tile.
-function updateMicIndicator(side, on) {
-  const id        = side === 'local' ? 'localMicIndicator' : 'remoteMicIndicator';
-  const indicator = document.getElementById(id);
-  if (!indicator) return;
-  const icon = indicator.querySelector('.material-symbols-outlined');
-  if (icon) icon.textContent = on ? 'mic' : 'mic_off';
-  // Red background when muted
-  indicator.classList.toggle('bg-red-600/80', !on);
-  indicator.classList.toggle('bg-black/50',    on);
-}
-
-// Show the avatar placeholder when camera is off, the video when on.
-function updateCameraDisplay(side, on) {
-  const videoId  = side === 'local' ? 'localVideo'  : 'remoteVideo';
-  const avatarId = side === 'local' ? 'localAvatar' : 'remoteAvatar';
-  document.getElementById(videoId)?.classList.toggle('hidden', !on);
-  document.getElementById(avatarId)?.classList.toggle('hidden',  on);
-}
-
-// ─── WebRTC ───────────────────────────────────────────────────────────────────
-const RTC_CONFIG = { iceServers: [{ urls: 'stun:stun.l.google.com:19302' }] };
-
-function createPeerConnection() {
-  pc = new RTCPeerConnection(RTC_CONFIG);
-
-  if (localStream) {
-    localStream.getTracks().forEach(track => pc.addTrack(track, localStream));
-  }
-
-  pc.ontrack = (event) => {
-    const remoteVideo = document.getElementById('remoteVideo');
-    if (remoteVideo && event.streams[0]) remoteVideo.srcObject = event.streams[0];
-    setRemoteConnected(true);
-  };
-
-  pc.onicecandidate = (event) => {
-    if (event.candidate) sendMsg({ type: 'ice-candidate', candidate: event.candidate });
-  };
-
-  pc.onconnectionstatechange = () => console.log('[WebRTC]', pc.connectionState);
-}
-
-function closePeerConnection() {
-  if (pc) { pc.close(); pc = null; }
-}
-
-// ─── WebSocket ────────────────────────────────────────────────────────────────
-function connectWebSocket() {
-  const proto = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
-  ws = new WebSocket(`${proto}//${window.location.host}/ws?meetID=${meetID}`);
-
-  ws.onopen  = () => { if (!isHost) ws.send(JSON.stringify({ type: 'knock' })); };
-  ws.onmessage = (e) => { let m; try { m = JSON.parse(e.data); } catch { return; } onMessage(m); };
-  ws.onclose = () => console.log('[WS] closed');
-  ws.onerror = (e) => console.error('[WS] error', e);
-}
-
-function sendMsg(obj) {
-  if (ws && ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify(obj));
-}
-
-// ─── Message handler ──────────────────────────────────────────────────────────
-// Signaling flow:
-//   1. Host clicks Admit  → sends {type:"admit"}
-//   2. Guest receives admit → startCamera → createOffer → sends offer
-//   3. Host receives offer → createAnswer → sends answer
-//   4. Both sides trickle ICE candidates
-async function onMessage(msg) {
-  switch (msg.type) {
-
-    case 'knock':
-      document.getElementById('knockNotification')?.classList.remove('hidden');
-      break;
-
-    case 'admit': {
-      showScreen('meeting');
-      document.getElementById('meetIDBar').textContent = meetID;
-      setupShareLink();
-      await startCamera();
-      createPeerConnection();
-      const offer = await pc.createOffer();
-      await pc.setLocalDescription(offer);
-      sendMsg({ type: 'offer', sdp: pc.localDescription });
-      break;
+    // ── Dark mode ──
+    function toggleDark() {
+      state.isDark = !state.isDark;
+      document.documentElement.classList.toggle('dark', state.isDark);
+      localStorage.setItem('theme', state.isDark ? 'dark' : 'light');
     }
 
-    case 'deny':
-      ws.close();
-      showScreen('denied');
-      startRedirectCountdown('deniedCountdown');
-      break;
-
-    case 'offer': {
-      createPeerConnection();
-      await pc.setRemoteDescription(new RTCSessionDescription(msg.sdp));
-      const answer = await pc.createAnswer();
-      await pc.setLocalDescription(answer);
-      sendMsg({ type: 'answer', sdp: pc.localDescription });
-      break;
+    // ── Auth API helpers ──
+    async function apiPost(path, body, requiresAuth = false) {
+      const headers = { 'Content-Type': 'application/json' };
+      if (requiresAuth && state.token) headers['Authorization'] = `Bearer ${state.token}`;
+      const res = await fetch(path, { method: 'POST', headers, body: JSON.stringify(body) });
+      return res;
     }
 
-    case 'answer':
-      if (pc) await pc.setRemoteDescription(new RTCSessionDescription(msg.sdp));
-      break;
+    async function apiGet(path) {
+      const res = await fetch(path, {
+        headers: { 'Authorization': `Bearer ${state.token}` },
+      });
+      return res;
+    }
 
-    case 'ice-candidate':
-      if (pc && msg.candidate) await pc.addIceCandidate(new RTCIceCandidate(msg.candidate));
-      break;
+    function saveSession(token, user) {
+      state.token = token;
+      state.user  = user;
+      localStorage.setItem('om_token', token);
+    }
 
-    case 'mic-state':
-      updateMicIndicator('remote', msg.on);
-      break;
+    function clearSession() {
+      state.token = null;
+      state.user  = null;
+      localStorage.removeItem('om_token');
+    }
 
-    case 'camera-state':
-      updateCameraDisplay('remote', msg.on);
-      break;
+    // ── Auth actions ──
+    async function login() {
+      state.authError   = '';
+      state.authLoading = true;
+      try {
+        const res  = await apiPost('/api/auth/login', { email: state.authForm.email, password: state.authForm.password });
+        const data = await res.json();
+        if (!res.ok) { state.authError = data.error; return; }
+        saveSession(data.token, data.user);
+        afterLogin();
+      } catch { state.authError = 'Network error. Please try again.'; }
+      finally   { state.authLoading = false; }
+    }
 
-    // Guest left — host goes back to solo "waiting" state, ready for a new joiner
-    case 'peer-left':
-      closePeerConnection();
-      const rv = document.getElementById('remoteVideo');
-      if (rv) rv.srcObject = null;
-      updateCameraDisplay('remote', true);  // reset for next joiner
-      updateMicIndicator('remote', true);
-      setRemoteConnected(false);
-      break;
+    async function register() {
+      state.authError   = '';
+      if (!state.authForm.avatar) { state.authError = 'Please choose a profile picture.'; return; }
+      state.authLoading = true;
+      try {
+        const res  = await apiPost('/api/auth/register', {
+          name: state.authForm.name, email: state.authForm.email,
+          password: state.authForm.password, avatar: state.authForm.avatar,
+        });
+        const data = await res.json();
+        if (!res.ok) { state.authError = data.error; return; }
+        state.screen = 'auth-verify-sent';
+      } catch { state.authError = 'Network error. Please try again.'; }
+      finally   { state.authLoading = false; }
+    }
 
-    case 'meet-full':
-      showScreen('full');
-      startRedirectCountdown('fullCountdown');
-      break;
+    async function forgotPassword() {
+      state.authError   = '';
+      state.authSuccess = '';
+      state.authLoading = true;
+      try {
+        const res  = await apiPost('/api/auth/forgot-password', { email: state.authForm.email });
+        const data = await res.json();
+        if (!res.ok) { state.authError = data.error; return; }
+        state.authSuccess = data.message;
+      } catch { state.authError = 'Network error. Please try again.'; }
+      finally   { state.authLoading = false; }
+    }
 
-    case 'meet-ended':
+    async function resetPassword() {
+      state.authError   = '';
+      state.authSuccess = '';
+      state.authLoading = true;
+      try {
+        const res  = await apiPost('/api/auth/reset-password', {
+          token: state.pendingResetToken, password: state.authForm.password,
+        });
+        const data = await res.json();
+        if (!res.ok) { state.authError = data.error; return; }
+        state.authSuccess = data.message + ' Redirecting to sign in…';
+        setTimeout(() => { state.screen = 'auth-login'; state.authSuccess = ''; }, 2000);
+      } catch { state.authError = 'Network error. Please try again.'; }
+      finally   { state.authLoading = false; }
+    }
+
+    async function verifyEmailFromToken(token) {
+      try {
+        const res  = await apiPost('/api/auth/verify-email', { token });
+        const data = await res.json();
+        if (!res.ok) {
+          state.authError = data.error || 'Verification failed. The link may have expired.';
+          state.screen    = 'auth-login';
+          return;
+        }
+        saveSession(data.token, data.user);
+        afterLogin();
+      } catch {
+        state.authError = 'Network error during verification.';
+        state.screen    = 'auth-login';
+      }
+    }
+
+    function logout() {
+      closeWebSocket();
       closePeerConnection();
       stopCamera();
-      ws.close();
-      showScreen('ended');
-      startRedirectCountdown('endedCountdown');
-      break;
-  }
-}
+      clearSession();
+      state.screen = 'auth-login';
+      state.authForm = { name: '', email: '', password: '', avatar: '' };
+      // Clear URL params
+      window.history.replaceState({}, '', '/');
+    }
 
-// ─── Meeting controls ─────────────────────────────────────────────────────────
-function setupShareLink() {
-  const el = document.getElementById('meetCodeDisplay');
-  if (el) el.textContent = meetID;
-}
+    // ── After successful login: decide which screen to show ──
+    function afterLogin() {
+      const params = new URLSearchParams(window.location.search);
+      const mid    = params.get('meetID');
+      if (mid) {
+        state.meetID = mid;
+        state.isHost = sessionStorage.getItem(`host_${mid}`) === 'true';
+        if (state.isHost) {
+          enterMeetingAsHost();
+        } else {
+          state.screen = 'knock';
+        }
+      } else {
+        state.screen = 'landing';
+      }
+    }
 
-function setupMeetingControls() {
+    // ── On mount: restore session / handle URL tokens ──
+    onMounted(async () => {
+      const params = new URLSearchParams(window.location.search);
 
-  // Mic toggle
-  document.getElementById('micBtn')?.addEventListener('click', () => {
-    if (!localStream) return;
-    micOn = !micOn;
-    localStream.getAudioTracks().forEach(t => t.enabled = micOn);
-    const icon = document.querySelector('#micBtn .material-symbols-outlined');
-    if (icon) icon.textContent = micOn ? 'mic' : 'mic_off';
-    document.getElementById('micBtn')?.classList.toggle('bg-red-600',  !micOn);
-    document.getElementById('micBtn')?.classList.toggle('bg-slate-700', micOn);
-    updateMicIndicator('local', micOn);
-    sendMsg({ type: 'mic-state', on: micOn });
-  });
+      // Handle email verification link
+      const verifyToken = params.get('verify_token');
+      if (verifyToken) {
+        window.history.replaceState({}, '', '/');
+        await verifyEmailFromToken(verifyToken);
+        return;
+      }
 
-  // Camera toggle
-  document.getElementById('cameraBtn')?.addEventListener('click', () => {
-    if (!localStream) return;
-    cameraOn = !cameraOn;
-    localStream.getVideoTracks().forEach(t => t.enabled = cameraOn);
-    const icon = document.querySelector('#cameraBtn .material-symbols-outlined');
-    if (icon) icon.textContent = cameraOn ? 'videocam' : 'videocam_off';
-    document.getElementById('cameraBtn')?.classList.toggle('bg-red-600',   !cameraOn);
-    document.getElementById('cameraBtn')?.classList.toggle('bg-slate-700',  cameraOn);
-    updateCameraDisplay('local', cameraOn);
-    sendMsg({ type: 'camera-state', on: cameraOn });
-  });
+      // Handle password reset link
+      const resetToken = params.get('reset_token');
+      if (resetToken) {
+        window.history.replaceState({}, '', '/');
+        state.pendingResetToken = resetToken;
+        state.screen = 'auth-reset';
+        return;
+      }
 
-  // Leave
-  document.getElementById('leaveBtn')?.addEventListener('click', () => {
-    closePeerConnection();
-    stopCamera();
-    if (ws) ws.close();
-    window.location.href = '/';
-  });
+      // Restore saved session
+      const savedToken = localStorage.getItem('om_token');
+      if (savedToken) {
+        state.token = savedToken;
+        try {
+          const res = await apiGet('/api/auth/me');
+          if (res.ok) {
+            state.user = await res.json();
+            afterLogin();
+            return;
+          }
+        } catch {}
+        clearSession();
+      }
 
-  // Copy meetID from top bar
-  document.getElementById('copyMeetIDBtn')?.addEventListener('click', () => {
-    navigator.clipboard.writeText(`${window.location.origin}/?meetID=${meetID}`).then(() => {
-      const icon = document.querySelector('#copyMeetIDBtn .material-symbols-outlined');
-      if (icon) { icon.textContent = 'check'; setTimeout(() => icon.textContent = 'content_copy', 2000); }
+      state.screen = 'auth-login';
     });
-  });
 
-  // Copy meet link from waiting placeholder
-  document.getElementById('shareLinkBtn')?.addEventListener('click', () => {
-    navigator.clipboard.writeText(`${window.location.origin}/?meetID=${meetID}`).then(() => {
-      const icon = document.querySelector('#shareLinkBtn .material-symbols-outlined');
-      if (icon) { icon.textContent = 'check'; setTimeout(() => icon.textContent = 'content_copy', 2000); }
-    });
-  });
+    onUnmounted(() => clearInterval(clockInterval));
 
-  // Close invite card
-  document.getElementById('inviteCardClose')?.addEventListener('click', () => {
-    document.getElementById('inviteCard')?.classList.add('hidden');
-  });
-
-  // Admit
-  document.getElementById('admitBtn')?.addEventListener('click', () => {
-    sendMsg({ type: 'admit' });
-    document.getElementById('knockNotification')?.classList.add('hidden');
-  });
-
-  // Deny
-  document.getElementById('denyBtn')?.addEventListener('click', () => {
-    sendMsg({ type: 'deny' });
-    document.getElementById('knockNotification')?.classList.add('hidden');
-  });
-}
-
-// ─── Page init ────────────────────────────────────────────────────────────────
-(function init() {
-  setupMeetingControls();
-
-  if (!meetID) {
-    showScreen('landing');
-
-    document.getElementById('newMeetingBtn')?.addEventListener('click', () => {
+    // ── Meeting: new + join ──
+    function newMeeting() {
       const id = generateMeetID();
       sessionStorage.setItem(`host_${id}`, 'true');
-      goToMeet(id);
-    });
+      const url = new URL(window.location.href);
+      url.searchParams.set('meetID', id);
+      window.location.href = url.toString();
+    }
 
-    document.getElementById('joinBtn')?.addEventListener('click', () => {
-      const raw = document.getElementById('meetIDInput')?.value ?? '';
-      const id  = parseMeetID(raw);
-      if (id) goToMeet(id);
-    });
+    function joinMeet() {
+      const id = parseMeetID(state.meetIDInput);
+      if (!id) return;
+      const url = new URL(window.location.href);
+      url.searchParams.set('meetID', id);
+      window.location.href = url.toString();
+    }
 
-    document.getElementById('meetIDInput')?.addEventListener('keydown', (e) => {
-      if (e.key === 'Enter') document.getElementById('joinBtn')?.click();
-    });
+    function goHome() {
+      closeWebSocket();
+      closePeerConnection();
+      stopCamera();
+      window.location.href = '/';
+    }
 
-  } else if (isHost) {
-    showScreen('meeting');
-    document.getElementById('meetIDBar').textContent = meetID;
-    setupShareLink();
-    startCamera();
-    connectWebSocket();
+    // ── Camera ──
+    async function startCamera() {
+      try {
+        localStream = await navigator.mediaDevices.getUserMedia({ video: true, audio: true });
+        await nextTick();
+        const vid = document.getElementById('localVideo');
+        if (vid) vid.srcObject = localStream;
+      } catch (err) { console.error('Camera error:', err); }
+    }
 
-  } else {
-    showScreen('knock');
-    document.getElementById('knockMeetID').textContent = meetID;
+    function stopCamera() {
+      if (!localStream) return;
+      localStream.getTracks().forEach(t => t.stop());
+      localStream = null;
+      const vid = document.getElementById('localVideo');
+      if (vid) vid.srcObject = null;
+    }
 
-    document.getElementById('askToJoinBtn')?.addEventListener('click', () => {
-      showScreen('waiting');
+    // ── WebRTC ──
+    function createPeerConnection() {
+      pc = new RTCPeerConnection(RTC_CONFIG);
+      if (localStream) localStream.getTracks().forEach(t => pc.addTrack(t, localStream));
+
+      pc.ontrack = (e) => {
+        const rv = document.getElementById('remoteVideo');
+        if (rv && e.streams[0]) rv.srcObject = e.streams[0];
+        state.remoteConnected = true;
+      };
+
+      pc.onicecandidate = (e) => {
+        if (e.candidate) wsSend({ type: 'ice-candidate', candidate: e.candidate });
+      };
+
+      pc.onconnectionstatechange = () => console.log('[WebRTC]', pc.connectionState);
+    }
+
+    function closePeerConnection() {
+      if (pc) { pc.close(); pc = null; }
+    }
+
+    // ── WebSocket ──
+    function connectWebSocket() {
+      const proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
+      ws = new WebSocket(`${proto}//${location.host}/ws?meetID=${state.meetID}&token=${state.token}`);
+      ws.onopen    = () => { if (!state.isHost) wsSend({ type: 'knock', name: state.user.name, avatar: state.user.avatar, id: state.user.id }); };
+      ws.onmessage = (e) => { let m; try { m = JSON.parse(e.data); } catch { return; } onMessage(m); };
+      ws.onclose   = () => console.log('[WS] closed');
+      ws.onerror   = (e) => console.error('[WS] error', e);
+    }
+
+    function closeWebSocket() {
+      if (ws) { ws.close(); ws = null; }
+    }
+
+    function wsSend(obj) {
+      if (ws && ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify(obj));
+    }
+
+    // ── Message handler ──
+    async function onMessage(msg) {
+      switch (msg.type) {
+        case 'knock':
+          state.knocker = { name: msg.name, avatar: msg.avatar, id: msg.id };
+          break;
+
+        case 'admit':
+          state.screen = 'meeting';
+          await startCamera();
+          createPeerConnection();
+          const offer = await pc.createOffer();
+          await pc.setLocalDescription(offer);
+          wsSend({ type: 'offer', sdp: pc.localDescription, user: { id: state.user.id, name: state.user.name, avatar: state.user.avatar } });
+          break;
+
+        case 'deny':
+          closeWebSocket();
+          state.screen = 'denied';
+          startCountdown(5);
+          break;
+
+        case 'offer':
+          createPeerConnection();
+          await pc.setRemoteDescription(new RTCSessionDescription(msg.sdp));
+          const answer = await pc.createAnswer();
+          await pc.setLocalDescription(answer);
+          wsSend({ type: 'answer', sdp: pc.localDescription });
+          state.remoteUser = msg.user || null;
+          break;
+
+        case 'answer':
+          if (pc) await pc.setRemoteDescription(new RTCSessionDescription(msg.sdp));
+          break;
+
+        case 'ice-candidate':
+          if (pc && msg.candidate) await pc.addIceCandidate(new RTCIceCandidate(msg.candidate));
+          break;
+
+        case 'mic-state':
+          state.remoteMicOn = msg.on;
+          break;
+
+        case 'camera-state':
+          state.remoteCameraOn = msg.on;
+          break;
+
+        case 'peer-left':
+          closePeerConnection();
+          const rv2 = document.getElementById('remoteVideo');
+          if (rv2) rv2.srcObject = null;
+          state.remoteConnected = false;
+          state.remoteUser      = null;
+          state.remoteMicOn     = true;
+          state.remoteCameraOn  = true;
+          state.knocker         = null;
+          break;
+
+        case 'meet-full':
+          state.screen = 'full';
+          startCountdown(5);
+          break;
+
+        case 'meet-ended':
+          closePeerConnection();
+          stopCamera();
+          closeWebSocket();
+          state.screen = 'ended';
+          startCountdown(5);
+          break;
+      }
+    }
+
+    // ── Host enter meeting ──
+    function enterMeetingAsHost() {
+      state.screen = 'meeting';
+      nextTick(async () => {
+        await startCamera();
+        connectWebSocket();
+      });
+    }
+
+    // ── Guest knock ──
+    function askToJoin() {
+      state.screen = 'waiting';
       connectWebSocket();
-    });
+    }
 
-    document.getElementById('knockCancelBtn')?.addEventListener('click', () => {
-      window.location.href = '/';
-    });
+    function cancelWaiting() {
+      closeWebSocket();
+      goHome();
+    }
 
-    document.getElementById('waitingCancelBtn')?.addEventListener('click', () => {
-      if (ws) ws.close();
+    // ── Meeting controls ──
+    function toggleMic() {
+      if (!localStream) return;
+      state.micOn = !state.micOn;
+      localStream.getAudioTracks().forEach(t => t.enabled = state.micOn);
+      wsSend({ type: 'mic-state', on: state.micOn });
+    }
+
+    function toggleCamera() {
+      if (!localStream) return;
+      state.localCameraOn = !state.localCameraOn;
+      localStream.getVideoTracks().forEach(t => t.enabled = state.localCameraOn);
+      wsSend({ type: 'camera-state', on: state.localCameraOn });
+    }
+
+    function leaveMeeting() {
+      closePeerConnection();
+      stopCamera();
+      closeWebSocket();
       window.location.href = '/';
-    });
-  }
-})();
+    }
+
+    function admitKnocker() {
+      wsSend({ type: 'admit' });
+      state.knocker = null;
+    }
+
+    function denyKnocker() {
+      wsSend({ type: 'deny' });
+      state.knocker = null;
+    }
+
+    function copyMeetLink() {
+      const link = `${location.origin}/?meetID=${state.meetID}`;
+      navigator.clipboard.writeText(link).then(() => {
+        state.linkCopied = true;
+        setTimeout(() => state.linkCopied = false, 2000);
+      });
+    }
+
+    // ── Redirect countdown ──
+    function startCountdown(seconds) {
+      let t = seconds;
+      const tick = () => state.countdownText = `Returning to home in ${t}s…`;
+      tick();
+      const iv = setInterval(() => {
+        t--;
+        if (t <= 0) { clearInterval(iv); window.location.href = '/'; }
+        else tick();
+      }, 1000);
+    }
+
+    return {
+      ...state,
+      // expose state properties reactively
+      get screen()              { return state.screen; },
+      set screen(v)             { state.screen = v; },
+      get user()                { return state.user; },
+      get authForm()            { return state.authForm; },
+      get avatarOptions()       { return state.avatarOptions; },
+      get authError()           { return state.authError; },
+      set authError(v)          { state.authError = v; },
+      get authSuccess()         { return state.authSuccess; },
+      set authSuccess(v)        { state.authSuccess = v; },
+      get authLoading()         { return state.authLoading; },
+      get showPassword()        { return state.showPassword; },
+      set showPassword(v)       { state.showPassword = v; },
+      get isDark()              { return state.isDark; },
+      get timeStr()             { return state.timeStr; },
+      get dateStr()             { return state.dateStr; },
+      get meetID()              { return state.meetID; },
+      get isHost()              { return state.isHost; },
+      get meetIDInput()         { return state.meetIDInput; },
+      set meetIDInput(v)        { state.meetIDInput = v; },
+      get micOn()               { return state.micOn; },
+      get localCameraOn()       { return state.localCameraOn; },
+      get remoteMicOn()         { return state.remoteMicOn; },
+      get remoteCameraOn()      { return state.remoteCameraOn; },
+      get remoteConnected()     { return state.remoteConnected; },
+      get remoteUser()          { return state.remoteUser; },
+      get knocker()             { return state.knocker; },
+      get inviteCardDismissed() { return state.inviteCardDismissed; },
+      set inviteCardDismissed(v){ state.inviteCardDismissed = v; },
+      get linkCopied()          { return state.linkCopied; },
+      get countdownText()       { return state.countdownText; },
+
+      avatarURL,
+      toggleDark,
+      login,
+      register,
+      forgotPassword,
+      resetPassword,
+      logout,
+      newMeeting,
+      joinMeet,
+      goHome,
+      askToJoin,
+      cancelWaiting,
+      toggleMic,
+      toggleCamera,
+      leaveMeeting,
+      admitKnocker,
+      denyKnocker,
+      copyMeetLink,
+    };
+  },
+}).mount('#app');

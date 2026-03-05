@@ -8,6 +8,7 @@ OpenMeet
 *.dll
 *.so
 *.dylib
+.claude
 
 # Test binary, built with `go test -c`
 *.test

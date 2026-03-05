@@ -3,138 +3,45 @@ package main
 import (
 	"log"
 	"net/http"
-	"sync"
 
-	"github.com/gorilla/websocket"
+	"github.com/shubhamatkal/OpenMeet/config"
+	"github.com/shubhamatkal/OpenMeet/db"
+	"github.com/shubhamatkal/OpenMeet/handlers"
+	"github.com/shubhamatkal/OpenMeet/middleware"
 )
 
-// --- Meet storage ---
-
-// A Meet holds up to 2 WebSocket connections (peer[0] = host, peer[1] = guest).
-type Meet struct {
-	peers []*websocket.Conn
-}
-
-// meets is a map: meetID (string) → Meet struct
-var meets = make(map[string]*Meet)
-
-// mu guards all reads and writes to `meets`
-var mu sync.Mutex
-
-// --- WebSocket upgrader ---
-
-var upgrader = websocket.Upgrader{
-	CheckOrigin: func(r *http.Request) bool { return true },
-}
-
-// --- WebSocket handler ---
-
-func handleWS(w http.ResponseWriter, r *http.Request) {
-	meetID := r.URL.Query().Get("meetID")
-	if meetID == "" {
-		http.Error(w, "meetID param required", http.StatusBadRequest)
-		return
-	}
-
-	// Upgrade HTTP → WebSocket
-	conn, err := upgrader.Upgrade(w, r, nil)
-	if err != nil {
-		log.Println("upgrade error:", err)
-		return
-	}
-	defer conn.Close()
-
-	// --- Add peer to meet ---
-	mu.Lock()
-	meet, exists := meets[meetID]
-	if !exists {
-		meet = &Meet{}
-		meets[meetID] = meet
-	}
-
-	// Only 2 peers allowed. Send "meet-full" to the 3rd+ connection then close it.
-	if len(meet.peers) >= 2 {
-		mu.Unlock()
-		log.Printf("Meet %s is full — rejecting connection", meetID)
-		conn.WriteMessage(websocket.TextMessage, []byte(`{"type":"meet-full"}`))
-		conn.Close()
-		return
-	}
-
-	meet.peers = append(meet.peers, conn)
-	peerIndex := len(meet.peers) - 1 // 0 = host, 1 = guest
-	mu.Unlock()
-
-	log.Printf("Peer %d joined meet %s", peerIndex, meetID)
-
-	// --- Relay loop: read from this peer, forward to the other ---
-	for {
-		msgType, msg, err := conn.ReadMessage()
-		if err != nil {
-			log.Printf("Peer %d left meet %s", peerIndex, meetID)
-			break
-		}
-
-		mu.Lock()
-		for i, peer := range meet.peers {
-			if i == peerIndex {
-				continue // don't echo back to sender
-			}
-			if err := peer.WriteMessage(msgType, msg); err != nil {
-				log.Println("write error:", err)
-			}
-		}
-		mu.Unlock()
-	}
-
-	// --- Cleanup on disconnect ---
-	mu.Lock()
-
-	// peerIndex captured at join time tells us the role (host vs guest),
-	// but the slice may have shrunk since then if the other peer already left.
-	// Search for this conn's current position rather than using the stale index.
-	currentIdx := -1
-	for i, p := range meet.peers {
-		if p == conn {
-			currentIdx = i
-			break
-		}
-	}
-
-	if currentIdx != -1 {
-		meet.peers = append(meet.peers[:currentIdx], meet.peers[currentIdx+1:]...)
-
-		hostLeft := peerIndex == 0 // role is determined by original join order
-
-		if hostLeft && len(meet.peers) > 0 {
-			meet.peers[0].WriteMessage(websocket.TextMessage, []byte(`{"type":"meet-ended"}`))
-			log.Printf("Host left meet %s — notified guest", meetID)
-		}
-
-		if !hostLeft && len(meet.peers) > 0 {
-			meet.peers[0].WriteMessage(websocket.TextMessage, []byte(`{"type":"peer-left"}`))
-			log.Printf("Guest left meet %s — notified host", meetID)
-		}
-
-		if len(meet.peers) == 0 {
-			delete(meets, meetID)
-			log.Printf("Meet %s closed", meetID)
-		}
-	}
-
-	mu.Unlock()
-}
-
-// --- Main ---
-
 func main() {
-	// Serve static files from ./static/
-	fs := http.FileServer(http.Dir("./static"))
-	http.Handle("/", fs)
+	config.Load()
+	db.Connect()
 
-	// WebSocket signaling endpoint
-	http.HandleFunc("/ws", handleWS)
+	mux := http.NewServeMux()
 
-	log.Println("OpenMeet started → http://localhost:8080")
-	log.Fatal(http.ListenAndServe(":8080", nil))
+	// Redirect email link tokens into the SPA
+	mux.HandleFunc("/verify-email", func(w http.ResponseWriter, r *http.Request) {
+		token := r.URL.Query().Get("token")
+		http.Redirect(w, r, "/?verify_token="+token, http.StatusFound)
+	})
+	mux.HandleFunc("/reset-password", func(w http.ResponseWriter, r *http.Request) {
+		token := r.URL.Query().Get("token")
+		http.Redirect(w, r, "/?reset_token="+token, http.StatusFound)
+	})
+
+	// Auth API (public)
+	mux.HandleFunc("/api/auth/register", handlers.Register)
+	mux.HandleFunc("/api/auth/verify-email", handlers.VerifyEmail)
+	mux.HandleFunc("/api/auth/login", handlers.Login)
+	mux.HandleFunc("/api/auth/forgot-password", handlers.ForgotPassword)
+	mux.HandleFunc("/api/auth/reset-password", handlers.ResetPassword)
+
+	// Auth API (protected)
+	mux.Handle("/api/auth/me", middleware.Auth(http.HandlerFunc(handlers.Me)))
+
+	// WebSocket signaling (protected)
+	mux.Handle("/ws", middleware.Auth(http.HandlerFunc(handlers.HandleWS)))
+
+	// Static files (must be last — catch-all)
+	mux.Handle("/", http.FileServer(http.Dir("./static")))
+
+	log.Printf("OpenMeet started → http://localhost:%s", config.C.Port)
+	log.Fatal(http.ListenAndServe(":"+config.C.Port, mux))
 }
