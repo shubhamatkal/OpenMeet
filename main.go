@@ -36,6 +36,7 @@ func main() {
 	// Auth API (protected)
 	mux.Handle("/api/auth/me", middleware.Auth(http.HandlerFunc(handlers.Me)))
 	mux.Handle("/api/meet/check", middleware.Auth(http.HandlerFunc(handlers.CheckUserInMeet)))
+	mux.HandleFunc("/api/meet-info", handlers.HandleMeetInfo)
 
 	// WebSocket signaling (protected)
 	mux.Handle("/ws", middleware.Auth(http.HandlerFunc(handlers.HandleWS)))

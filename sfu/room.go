@@ -97,22 +97,28 @@ func (r *Room) DenyKnocker(userID string) {
 }
 
 // AddExistingTracksTo wires up all currently-published tracks from existing peers
-// into newPeer's PeerConnection. Call this BEFORE CreateAnswer so the tracks are
-// included in the initial SDP answer. Also registers newPeer as a sink in each
-// broadcaster so it receives live RTP once ICE connects.
-func (r *Room) AddExistingTracksTo(newPeer *Peer) {
+// into newPeer's PeerConnection and registers newPeer as a sink in each broadcaster
+// so it receives live RTP once ICE connects. Returns the number of tracks added.
+// Call this BEFORE triggering renegotiation (not before CreateAnswer — adding tracks
+// to the answerer's PC and including them in the answer creates mismatched m-sections
+// that the browser ignores; renegotiation is the correct WebRTC mechanism instead).
+func (r *Room) AddExistingTracksTo(newPeer *Peer) int {
 	r.bcMu.RLock()
 	defer r.bcMu.RUnlock()
 
+	added := 0
 	for key, bc := range r.broadcasters {
-		senderPeerID := bc.src.StreamID() // StreamID = peerID set when broadcaster was created
-		lt, err := newPeer.AddSenderTrack(senderPeerID, bc.src)
+		lt, err := newPeer.AddSenderTrack(bc.SenderPeerID, bc.src)
 		if err != nil {
 			log.Printf("sfu: AddExistingTracksTo %s key=%s: %v", newPeer.ID, key, err)
 			continue
 		}
 		bc.AddSink(newPeer.ID, lt)
+		added++
+		log.Printf("sfu: AddExistingTracksTo → added %s track to peer %s", key, newPeer.ID)
 	}
+	log.Printf("sfu: AddExistingTracksTo peer %s: %d tracks added", newPeer.ID, added)
+	return added
 }
 
 // OnTrack is called when a peer's track arrives (after ICE connects).
@@ -120,7 +126,7 @@ func (r *Room) AddExistingTracksTo(newPeer *Peer) {
 // then triggers renegotiation so the other browsers pick up the new track.
 func (r *Room) OnTrack(senderPeer *Peer, remote *webrtc.TrackRemote) {
 	key := broadcasterKey(senderPeer.ID, remote.Kind().String())
-	bc := newBroadcaster(remote)
+	bc := newBroadcaster(remote, senderPeer.ID)
 
 	r.bcMu.Lock()
 	r.broadcasters[key] = bc
@@ -143,7 +149,7 @@ func (r *Room) OnTrack(senderPeer *Peer, remote *webrtc.TrackRemote) {
 			continue
 		}
 		bc.AddSink(target.ID, lt)
-		go target.Renegotiate()
+		target.ScheduleRenegotiate()
 	}
 
 	// Start broadcasting (one goroutine reads RTP, fans out to all sinks).
@@ -167,7 +173,7 @@ func (r *Room) Leave(peerID string) {
 	}
 	// Remove broadcasters published BY this peer.
 	for key, bc := range r.broadcasters {
-		if bc.src.StreamID() == peerID {
+		if bc.SenderPeerID == peerID {
 			delete(r.broadcasters, key)
 		}
 	}
@@ -185,6 +191,45 @@ func (r *Room) PeerCount() int {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
 	return len(r.peers)
+}
+
+// BroadcastToOthers sends a message to all peers in the room except the sender.
+func (r *Room) BroadcastToOthers(senderID string, msg map[string]any) {
+	r.mu.RLock()
+	targets := make([]*Peer, 0, len(r.peers))
+	for id, p := range r.peers {
+		if id != senderID {
+			targets = append(targets, p)
+		}
+	}
+	r.mu.RUnlock()
+	for _, p := range targets {
+		go p.SendJSON(msg)
+	}
+}
+
+// SendMediaStateTo sends the current mic/camera state of every other peer to the
+// given peer. Call this right after a new peer joins so they see existing mute states.
+func (r *Room) SendMediaStateTo(newPeer *Peer) {
+	r.mu.RLock()
+	type entry struct {
+		id       string
+		micOn    bool
+		cameraOn bool
+	}
+	states := make([]entry, 0, len(r.peers))
+	for id, p := range r.peers {
+		if id == newPeer.ID {
+			continue
+		}
+		states = append(states, entry{id: id, micOn: p.MicOn, cameraOn: p.CameraOn})
+	}
+	r.mu.RUnlock()
+
+	for _, s := range states {
+		newPeer.SendJSON(map[string]any{"type": "peer-mic-state", "userID": s.id, "on": s.micOn})
+		newPeer.SendJSON(map[string]any{"type": "peer-camera-state", "userID": s.id, "on": s.cameraOn})
+	}
 }
 
 // BroadcastRoomState sends the current participant list to every peer in the room.

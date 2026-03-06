@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"log"
 	"sync"
+	"time"
 
 	"github.com/gorilla/websocket"
 	"github.com/pion/webrtc/v4"
@@ -19,6 +20,13 @@ type Peer struct {
 
 	wsMu sync.Mutex
 	ws   *websocket.Conn
+
+	renegotiateMu    sync.Mutex
+	renegotiateTimer *time.Timer
+
+	// Media state — kept in sync with the browser's toggleMic / toggleCamera signals.
+	MicOn    bool
+	CameraOn bool
 }
 
 // SetWS sets the WebSocket connection. Must be called before the peer is used.
@@ -61,6 +69,23 @@ func (p *Peer) AddSenderTrack(senderPeerID string, remote *webrtc.TrackRemote) (
 	return lt, nil
 }
 
+// ScheduleRenegotiate coalesces rapid Renegotiate calls (e.g. audio + video tracks
+// arriving in quick succession) into a single renegotiation after a short delay.
+func (p *Peer) ScheduleRenegotiate() {
+	p.renegotiateMu.Lock()
+	defer p.renegotiateMu.Unlock()
+	if p.renegotiateTimer != nil {
+		p.renegotiateTimer.Reset(150 * time.Millisecond)
+		return
+	}
+	p.renegotiateTimer = time.AfterFunc(150*time.Millisecond, func() {
+		p.renegotiateMu.Lock()
+		p.renegotiateTimer = nil
+		p.renegotiateMu.Unlock()
+		p.Renegotiate()
+	})
+}
+
 // Renegotiate sends a new SDP offer to this peer so it picks up newly-added tracks.
 func (p *Peer) Renegotiate() {
 	offer, err := p.PC.CreateOffer(nil)
@@ -72,6 +97,7 @@ func (p *Peer) Renegotiate() {
 		log.Printf("sfu: renegotiate SetLocalDescription for %s: %v", p.ID, err)
 		return
 	}
+	log.Printf("sfu: renegotiate → sending offer to %s", p.ID)
 	p.SendJSON(map[string]any{
 		"type": "offer",
 		"sdp":  offer.SDP,

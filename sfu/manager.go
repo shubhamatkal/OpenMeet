@@ -25,6 +25,14 @@ func GetOrCreate(meetID string) *Room {
 	return r
 }
 
+// RoomExists returns true if an active SFU room exists for the given meetID.
+func RoomExists(meetID string) bool {
+	roomsMu.Lock()
+	defer roomsMu.Unlock()
+	_, ok := rooms[meetID]
+	return ok
+}
+
 func destroyIfEmpty(meetID string) {
 	roomsMu.Lock()
 	defer roomsMu.Unlock()

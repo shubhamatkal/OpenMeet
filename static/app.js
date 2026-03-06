@@ -66,6 +66,7 @@ createApp({
       sfuPeers:     [],   // [{id, name, avatar}] — peers with active media
       sfuSpeaking:  {},   // peerID → boolean (speaking indicator per remote peer)
       sfuKnocker:   null, // {id, name, avatar} — person knocking (shown to host)
+      sfuPeerMedia: {}, // peerID → {micOn, cameraOn}
 
       // Duplicate session
       alreadyInMeet: false,
@@ -103,6 +104,10 @@ createApp({
     // ── SFU non-reactive refs ──
     const sfuStreams   = new Map(); // peerID → MediaStream
     const sfuAudioCtxs = new Map(); // peerID → AudioContext
+    // Serialises all SDP offer/answer operations on the SFU RTCPeerConnection.
+    // ws.onmessage is not awaited, so without this queue concurrent setRemoteDescription
+    // calls would race and corrupt the WebRTC state machine.
+    let sfuSignalingQueue = Promise.resolve();
 
     // Re-assign srcObjects whenever sfuPeers list changes (e.g. after renegotiation re-render).
     watch(() => state.sfuPeers.length, async () => {
@@ -225,14 +230,26 @@ createApp({
     }
 
     // ── After login: route to correct screen ──
-    function afterLogin() {
+    async function afterLogin() {
       const params = new URLSearchParams(window.location.search);
       const mid    = params.get('meetID');
       if (mid) {
-        state.meetID  = mid;
-        state.isHost  = sessionStorage.getItem(`host_${mid}`) === 'true';
-        state.meetType = params.get('type') || sessionStorage.getItem(`type_${mid}`) || '1to1';
-        if (state.meetType === 'group') {
+        state.meetID = mid;
+        state.isHost = sessionStorage.getItem(`host_${mid}`) === 'true';
+
+        // Determine meeting type: sessionStorage (set when host created it) takes
+        // precedence; otherwise ask the server (checks if an SFU room is active).
+        let meetType = sessionStorage.getItem(`type_${mid}`);
+        if (!meetType) {
+          try {
+            const res = await fetch(`/api/meet-info?meetID=${encodeURIComponent(mid)}`);
+            if (res.ok) { meetType = (await res.json()).type; }
+          } catch {}
+          meetType = meetType || '1to1';
+        }
+
+        state.meetType = meetType;
+        if (meetType === 'group') {
           enterGroupMeeting();
         } else if (state.isHost) {
           enterMeetingAsHost();
@@ -259,7 +276,7 @@ createApp({
         state.token = savedToken;
         try {
           const res = await apiGet('/api/auth/me');
-          if (res.ok) { state.user = await res.json(); afterLogin(); return; }
+          if (res.ok) { state.user = await res.json(); await afterLogin(); return; }
         } catch {}
         clearSession();
       }
@@ -283,7 +300,6 @@ createApp({
       sessionStorage.setItem(`type_${id}`, type);
       const url = new URL(window.location.href);
       url.searchParams.set('meetID', id);
-      if (type === 'group') url.searchParams.set('type', 'group');
       window.location.href = url.toString();
     }
     function joinMeet() {
@@ -585,28 +601,52 @@ createApp({
       ws.onerror = (err) => console.error('[SFU WS] error', err);
     }
 
-    function sfuCreateOffer() {
-      pc = new RTCPeerConnection(RTC_CONFIG);
+    async function sfuCreateOffer() {
+      // Guard: don't create a second PeerConnection if one already exists.
+      if (pc) return;
+
+      const myPc = new RTCPeerConnection(RTC_CONFIG);
+      pc = myPc;
 
       // Add local tracks.
-      if (localStream) localStream.getTracks().forEach(t => pc.addTrack(t, localStream));
+      if (localStream) localStream.getTracks().forEach(t => myPc.addTrack(t, localStream));
 
       // ICE trickle to server.
-      pc.onicecandidate = (e) => {
+      myPc.onicecandidate = (e) => {
         if (e.candidate) wsSend({ type: 'ice-candidate', candidate: e.candidate });
       };
 
-      // Each ontrack event is a remote participant's track.
-      // Multiple tracks (video + audio) share the same stream, so this fires twice per peer.
-      pc.ontrack = async (e) => {
-        const stream = e.streams[0];
-        if (!stream) return;
-        const peerID = stream.id;
+      // Each ontrack event is a remote participant's track (fires once for audio, once for video).
+      myPc.ontrack = async (e) => {
+        console.log('[SFU ontrack]', e.track.kind, 'id:', e.track.id, 'streams:', e.streams.length, e.streams[0]?.id);
+        const track = e.track;
+        let stream = e.streams && e.streams[0];
+        let peerID;
+
+        if (stream && stream.id) {
+          // Happy path: Pion included MSID in SDP so browser grouped the track into a stream.
+          peerID = stream.id;
+          // Make sure the stream in our map is the same object (handles audio + video arriving
+          // separately but sharing one MediaStream).
+          if (!sfuStreams.has(peerID)) sfuStreams.set(peerID, stream);
+          else stream = sfuStreams.get(peerID); // reuse the existing stream object
+        } else {
+          // Fallback: some browsers/renegotiation paths give e.streams = [].
+          // Track id format is "{peerID}-audio" or "{peerID}-video" (set by Pion AddSenderTrack).
+          const sep = track.id.lastIndexOf('-');
+          if (sep < 0) return;
+          peerID = track.id.slice(0, sep);
+          if (!peerID) return;
+          // Build / reuse a MediaStream keyed by peerID.
+          if (!sfuStreams.has(peerID)) sfuStreams.set(peerID, new MediaStream());
+          stream = sfuStreams.get(peerID);
+          if (!stream.getTrackById(track.id)) stream.addTrack(track);
+        }
+
         if (!peerID || peerID === state.user?.id) return;
 
-        // Store stream and start per-peer audio analysis.
-        sfuStreams.set(peerID, stream);
-        startSFURemoteAudio(peerID, stream);
+        // Start audio analysis only when the audio track arrives.
+        if (track.kind === 'audio') startSFURemoteAudio(peerID, stream);
 
         // Add peer to display list if not already there.
         if (!state.sfuPeers.find(p => p.id === peerID)) {
@@ -614,24 +654,24 @@ createApp({
           state.sfuPeers.push({ id: peerID, name: info.name || 'Guest', avatar: info.avatar || null });
         }
 
-        // Assign srcObject after the tile renders.
+        // Assign srcObject (use the map value so video + audio share the same stream object).
         await nextTick();
         const vid = document.getElementById(`sfuVideo-${peerID}`);
-        if (vid && vid.srcObject !== stream) vid.srcObject = stream;
+        if (vid) vid.srcObject = sfuStreams.get(peerID);
       };
 
-      pc.onconnectionstatechange = () => {
-        console.log('[SFU WebRTC]', pc.connectionState);
-        if (pc.connectionState === 'disconnected' || pc.connectionState === 'failed') {
-          // Remove all remote peers on disconnect.
+      myPc.onconnectionstatechange = () => {
+        console.log('[SFU WebRTC]', myPc.connectionState);
+        if (myPc.connectionState === 'disconnected' || myPc.connectionState === 'failed') {
           state.sfuPeers = [];
         }
       };
 
-      pc.createOffer().then(offer => {
-        pc.setLocalDescription(offer);
-        wsSend({ type: 'offer', sdp: offer.sdp });
-      });
+      // Use async/await so the local description is set before sending the offer,
+      // and myPc is used throughout (not the outer `pc` which could be reassigned).
+      const offer = await myPc.createOffer();
+      await myPc.setLocalDescription(offer);
+      wsSend({ type: 'offer', sdp: offer.sdp });
     }
 
     async function onSFUMessage(msg) {
@@ -660,17 +700,44 @@ createApp({
           state.sfuKnocker = msg.user || null;
           break;
 
+        case 'peer-mic-state':
+          if (msg.userID) {
+            state.sfuPeerMedia = {
+              ...state.sfuPeerMedia,
+              [msg.userID]: { ...state.sfuPeerMedia[msg.userID], micOn: msg.on },
+            };
+          }
+          break;
+
+        case 'peer-camera-state':
+          if (msg.userID) {
+            state.sfuPeerMedia = {
+              ...state.sfuPeerMedia,
+              [msg.userID]: { ...state.sfuPeerMedia[msg.userID], cameraOn: msg.on },
+            };
+          }
+          break;
+
         case 'answer':
-          if (pc) await pc.setRemoteDescription({ type: 'answer', sdp: msg.sdp });
+          console.log('[SFU] received answer, queuing setRemoteDescription');
+          sfuSignalingQueue = sfuSignalingQueue.then(async () => {
+            if (pc) await pc.setRemoteDescription({ type: 'answer', sdp: msg.sdp });
+            console.log('[SFU] answer applied, signalingState:', pc?.signalingState);
+          }).catch(e => console.error('[SFU signaling] answer:', e));
           break;
 
         case 'offer':
-          // Server-initiated renegotiation (new participant joined).
-          if (!pc) return;
-          await pc.setRemoteDescription({ type: 'offer', sdp: msg.sdp });
-          const answer = await pc.createAnswer();
-          await pc.setLocalDescription(answer);
-          wsSend({ type: 'answer', sdp: answer.sdp });
+          // Server-initiated renegotiation (e.g. existing peer's tracks being added).
+          console.log('[SFU] received renegotiation offer, queuing');
+          sfuSignalingQueue = sfuSignalingQueue.then(async () => {
+            if (!pc) return;
+            console.log('[SFU] applying renegotiation offer, signalingState:', pc.signalingState);
+            await pc.setRemoteDescription({ type: 'offer', sdp: msg.sdp });
+            const ans = await pc.createAnswer();
+            await pc.setLocalDescription(ans);
+            wsSend({ type: 'answer', sdp: ans.sdp });
+            console.log('[SFU] renegotiation done, signalingState:', pc.signalingState);
+          }).catch(e => console.error('[SFU signaling] offer:', e));
           break;
 
         case 'ice-candidate':
@@ -763,6 +830,9 @@ createApp({
     }
 
     function leaveMeeting() {
+      // Notify server immediately so it can broadcast room-state to remaining
+      // peers before the TCP connection closes (which can lag by seconds).
+      wsSend({ type: 'leave' });
       closePeerConnection(); stopCamera(); closeWebSocket();
       sfuStreams.clear();
       for (const [, ctx] of sfuAudioCtxs) { try { ctx.close(); } catch {} }
@@ -770,6 +840,8 @@ createApp({
       state.sfuPeers = [];
       state.sfuRoomPeers = [];
       state.sfuSpeaking = {};
+      state.sfuPeerMedia = {};
+      sfuSignalingQueue = Promise.resolve();
       window.location.href = '/';
     }
 
@@ -872,6 +944,7 @@ createApp({
       get sfuPeers()            { return state.sfuPeers; },
       get sfuSpeaking()         { return state.sfuSpeaking; },
       get sfuKnocker()          { return state.sfuKnocker; },
+      get sfuPeerMedia()        { return state.sfuPeerMedia; },
       get sfuParticipants() {
         return state.sfuRoomPeers.map(p => ({
           ...p, isMe: p.id === state.user?.id,

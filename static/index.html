@@ -545,7 +545,7 @@
           </div>
           <div>
             <p class="font-semibold text-slate-900 dark:text-white text-sm">1-to-1 Meeting</p>
-            <p class="text-slate-500 dark:text-slate-400 text-xs mt-0.5">Private call with one person</p>
+            <p class="text-slate-500 dark:text-slate-400 text-xs mt-0.5">p2p call with 1 person.(no server involved)</p>
           </div>
         </button>
         <!-- Group Meeting -->
@@ -556,7 +556,7 @@
           </div>
           <div>
             <p class="font-semibold text-slate-900 dark:text-white text-sm">Group Meeting</p>
-            <p class="text-slate-500 dark:text-slate-400 text-xs mt-0.5">Call with multiple participants</p>
+            <p class="text-slate-500 dark:text-slate-400 text-xs mt-0.5">Call with multiple participants with SFU server written in GO</p>
           </div>
         </button>
       </div>
@@ -607,22 +607,23 @@
             <span v-else class="material-symbols-outlined text-5xl text-slate-600">person</span>
           </div>
           <video :id="`sfuVideo-${peer.id}`" autoplay playsinline
-            class="absolute inset-0 w-full h-full object-cover">
+            class="absolute inset-0 w-full h-full object-cover"
+            :class="{ 'opacity-0': sfuPeerMedia[peer.id]?.cameraOn === false }">
           </video>
           <!-- Name badge with per-peer speaking animation -->
-          <div class="absolute bottom-2 left-2 flex items-center gap-1 bg-black/60 backdrop-blur-sm rounded-lg px-2 py-1 z-10">
-            <template v-if="sfuSpeaking[peer.id]">
+          <div :class="['absolute bottom-2 left-2 flex items-center gap-1 rounded-lg px-2 py-1 z-10 backdrop-blur-sm', sfuPeerMedia[peer.id]?.micOn === false ? 'bg-red-600/80' : 'bg-black/60']">
+            <template v-if="sfuSpeaking[peer.id] && sfuPeerMedia[peer.id]?.micOn !== false">
               <div class="flex items-end gap-px" style="height:13px">
                 <div class="w-0.5 bg-white rounded-sm bar-anim"></div>
                 <div class="w-0.5 bg-white rounded-sm bar-anim"></div>
                 <div class="w-0.5 bg-white rounded-sm bar-anim"></div>
               </div>
             </template>
-            <span v-else class="material-symbols-outlined text-white" style="font-size:13px">mic</span>
+            <span v-else class="material-symbols-outlined text-white" style="font-size:13px">{{ sfuPeerMedia[peer.id]?.micOn === false ? 'mic_off' : 'mic' }}</span>
             <span class="text-white text-xs font-medium max-w-[110px] truncate">{{ peer.name }}</span>
           </div>
           <!-- Speaking ring -->
-          <div v-if="sfuSpeaking[peer.id]" class="absolute inset-0 rounded-xl ring-2 ring-green-400 pointer-events-none z-10"></div>
+          <div v-if="sfuSpeaking[peer.id] && sfuPeerMedia[peer.id]?.micOn !== false" class="absolute inset-0 rounded-xl ring-2 ring-green-400 pointer-events-none z-10"></div>
         </div>
 
       </div>
@@ -679,6 +680,14 @@
                 <p class="text-white text-sm font-medium truncate">
                   {{ p.name }}<span v-if="p.isMe" class="text-slate-400 font-normal"> (you)</span>
                 </p>
+              </div>
+              <div class="flex items-center gap-1 flex-shrink-0">
+                <span :class="['material-symbols-outlined text-base', p.isMe ? (micOn ? 'text-slate-400' : 'text-red-400') : (sfuPeerMedia[p.id]?.micOn === false ? 'text-red-400' : 'text-slate-400')]">
+                  {{ p.isMe ? (micOn ? 'mic' : 'mic_off') : (sfuPeerMedia[p.id]?.micOn === false ? 'mic_off' : 'mic') }}
+                </span>
+                <span :class="['material-symbols-outlined text-base', p.isMe ? (localCameraOn ? 'text-slate-400' : 'text-red-400') : (sfuPeerMedia[p.id]?.cameraOn === false ? 'text-red-400' : 'text-slate-400')]">
+                  {{ p.isMe ? (localCameraOn ? 'videocam' : 'videocam_off') : (sfuPeerMedia[p.id]?.cameraOn === false ? 'videocam_off' : 'videocam') }}
+                </span>
               </div>
             </div>
           </div>

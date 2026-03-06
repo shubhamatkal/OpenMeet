@@ -10,16 +10,18 @@ import (
 // TrackBroadcaster reads RTP from one TrackRemote and fans it out to multiple
 // TrackLocalStaticRTP sinks. New sinks can be added at any time (for late joiners).
 type TrackBroadcaster struct {
-	src    *webrtc.TrackRemote
-	mu     sync.RWMutex
-	sinks  map[string]*webrtc.TrackLocalStaticRTP // peerID → sink
-	closed bool
+	src          *webrtc.TrackRemote
+	SenderPeerID string // userID of the peer who published this track
+	mu           sync.RWMutex
+	sinks        map[string]*webrtc.TrackLocalStaticRTP // peerID → sink
+	closed       bool
 }
 
-func newBroadcaster(src *webrtc.TrackRemote) *TrackBroadcaster {
+func newBroadcaster(src *webrtc.TrackRemote, senderPeerID string) *TrackBroadcaster {
 	return &TrackBroadcaster{
-		src:   src,
-		sinks: make(map[string]*webrtc.TrackLocalStaticRTP),
+		src:          src,
+		SenderPeerID: senderPeerID,
+		sinks:        make(map[string]*webrtc.TrackLocalStaticRTP),
 	}
 }
 

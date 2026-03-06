@@ -22,7 +22,8 @@ type signalingMsg struct {
 	Type      string                   `json:"type"`
 	SDP       string                   `json:"sdp,omitempty"`
 	Candidate *webrtc.ICECandidateInit `json:"candidate,omitempty"`
-	UserID    string                   `json:"userID,omitempty"` // for admit / deny
+	UserID    string                   `json:"userID,omitempty"`
+	On        bool                     `json:"on"` // for mic-state / camera-state
 }
 
 var sfuUpgrader = websocket.Upgrader{
@@ -68,53 +69,62 @@ func HandleSFU(w http.ResponseWriter, r *http.Request) {
 	defer pc.Close()
 
 	peer := &sfu.Peer{
-		ID:   userID,
-		User: &user,
-		PC:   pc,
+		ID:       userID,
+		User:     &user,
+		PC:       pc,
+		MicOn:    true,
+		CameraOn: true,
 	}
-	// Set the exported WS field so Peer.SendJSON works.
 	peer.SetWS(conn)
+
+	// Single WS reader goroutine — the only goroutine that calls conn.ReadMessage().
+	// This avoids concurrent-read races between the knock-wait phase and the main loop.
+	msgCh := make(chan []byte, 32)
+	go func() {
+		defer close(msgCh)
+		for {
+			_, raw, err := conn.ReadMessage()
+			if err != nil {
+				return
+			}
+			msgCh <- raw
+		}
+	}()
 
 	// Join (or create) the room.
 	room := sfu.GetOrCreate(meetID)
 
 	// ── Knock / admit flow ────────────────────────────────────────────────────
-	// If the room already has people, make the new peer knock and wait for the
-	// host to admit or deny them before starting the WebRTC handshake.
 	if !room.IsEmpty() {
 		peer.SendJSON(map[string]any{"type": "waiting"})
 		admitCh := room.Knock(peer)
 
-		// Drain WS in a goroutine so the connection stays alive while waiting.
-		// Signal on wsDone when the client disconnects.
-		wsDone := make(chan struct{})
-		go func() {
-			defer close(wsDone)
-			for {
-				if _, _, err := conn.ReadMessage(); err != nil {
+	waitLoop:
+		for {
+			select {
+			case ok := <-admitCh:
+				if !ok {
+					peer.SendJSON(map[string]any{"type": "denied"})
+					log.Printf("sfu: %s denied entry to room %s", user.Name, meetID)
 					return
 				}
-			}
-		}()
+				log.Printf("sfu: %s admitted to room %s", user.Name, meetID)
+				break waitLoop
 
-		select {
-		case admitted := <-admitCh:
-			if !admitted {
-				peer.SendJSON(map[string]any{"type": "denied"})
-				log.Printf("sfu: %s denied entry to room %s", user.Name, meetID)
-				return
+			case _, open := <-msgCh:
+				if !open {
+					// Client disconnected while waiting.
+					room.DenyKnocker(userID)
+					log.Printf("sfu: %s disconnected while waiting for admission", user.Name)
+					return
+				}
+				// Ignore any messages sent during the waiting phase.
 			}
-			peer.SendJSON(map[string]any{"type": "admitted"})
-			log.Printf("sfu: %s admitted to room %s", user.Name, meetID)
-		case <-wsDone:
-			room.DenyKnocker(userID)
-			log.Printf("sfu: %s disconnected while waiting for admission", user.Name)
-			return
 		}
 	}
 
 	// ── Peer is admitted (or was first in room) ───────────────────────────────
-	// Tell the browser it's clear to start camera + WebRTC.
+	// Send exactly one "admitted" — whether the peer knocked or was first.
 	peer.SendJSON(map[string]any{"type": "admitted"})
 
 	room.Join(peer)
@@ -124,6 +134,9 @@ func HandleSFU(w http.ResponseWriter, r *http.Request) {
 	}()
 
 	room.BroadcastRoomState()
+	// Send existing peers' mic/camera states to the new joiner so they see
+	// mute indicators immediately without waiting for a toggle event.
+	room.SendMediaStateTo(peer)
 	log.Printf("sfu: %s (%s) joined room %s", userID, user.Name, meetID)
 
 	// ICE candidate trickle — send server candidates to browser.
@@ -143,14 +156,8 @@ func HandleSFU(w http.ResponseWriter, r *http.Request) {
 		room.OnTrack(peer, remote)
 	})
 
-	// WebSocket read loop — handle offer, answer, ice-candidate, admit, deny.
-	for {
-		_, raw, err := conn.ReadMessage()
-		if err != nil {
-			log.Printf("sfu: peer %s disconnected: %v", userID, err)
-			break
-		}
-
+	// Main WebSocket message loop.
+	for raw := range msgCh {
 		var msg signalingMsg
 		if err := json.Unmarshal(raw, &msg); err != nil {
 			log.Println("sfu: bad message:", err)
@@ -165,7 +172,10 @@ func HandleSFU(w http.ResponseWriter, r *http.Request) {
 				log.Println("sfu: SetRemoteDescription:", err)
 				continue
 			}
-			room.AddExistingTracksTo(peer)
+			// NOTE: do NOT call AddExistingTracksTo before CreateAnswer.
+			// An SDP answer cannot add new m-sections beyond what was in the offer;
+			// browsers silently ignore extra m-sections, so ontrack never fires.
+			// Instead we send a clean answer first, then renegotiate.
 			answer, err := pc.CreateAnswer(nil)
 			if err != nil {
 				log.Println("sfu: CreateAnswer:", err)
@@ -176,6 +186,14 @@ func HandleSFU(w http.ResponseWriter, r *http.Request) {
 				continue
 			}
 			peer.SendJSON(map[string]any{"type": "answer", "sdp": answer.SDP})
+
+			// Wire up existing tracks and renegotiate so the browser learns about them
+			// via a proper server-initiated offer (the correct WebRTC mechanism).
+			go func() {
+				if n := room.AddExistingTracksTo(peer); n > 0 {
+					peer.Renegotiate()
+				}
+			}()
 
 		case "answer":
 			sdp := webrtc.SessionDescription{Type: webrtc.SDPTypeAnswer, SDP: msg.SDP}
@@ -190,6 +208,11 @@ func HandleSFU(w http.ResponseWriter, r *http.Request) {
 				}
 			}
 
+		case "leave":
+			// Client explicitly left — return immediately so the deferred
+			// room.Leave + BroadcastRoomState fires right away for other peers.
+			return
+
 		case "admit":
 			if msg.UserID != "" {
 				room.AdmitKnocker(msg.UserID)
@@ -199,6 +222,24 @@ func HandleSFU(w http.ResponseWriter, r *http.Request) {
 			if msg.UserID != "" {
 				room.DenyKnocker(msg.UserID)
 			}
+
+		case "mic-state":
+			peer.MicOn = msg.On
+			room.BroadcastToOthers(userID, map[string]any{
+				"type":   "peer-mic-state",
+				"userID": userID,
+				"on":     msg.On,
+			})
+
+		case "camera-state":
+			peer.CameraOn = msg.On
+			room.BroadcastToOthers(userID, map[string]any{
+				"type":   "peer-camera-state",
+				"userID": userID,
+				"on":     msg.On,
+			})
 		}
 	}
+
+	log.Printf("sfu: peer %s disconnected", userID)
 }
